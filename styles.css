@@ -1,0 +1,208 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background-color: #f8fafc;
+}
+
+#app-container {
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+}
+
+#ggb-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* Floating Quick Rename Popup (GPU Accelerated via translate3d) */
+.quick-rename-popup {
+  position: fixed;
+  top: 0;
+  left: 0;
+  display: none;
+  z-index: 999999;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 12px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  padding: 10px 12px;
+  min-width: 210px;
+  contain: layout style;
+  user-select: none;
+}
+
+.quick-rename-popup.is-open {
+  will-change: transform;
+}
+
+.quick-rename-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.quick-rename-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #2563eb;
+  background: #eff6ff;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.quick-rename-badge svg {
+  width: 12px;
+  height: 12px;
+}
+
+.quick-rename-hint {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.quick-rename-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.quick-rename-input {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #0f172a;
+  background: #ffffff;
+  border: 2px solid #3b82f6;
+  border-radius: 8px;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.quick-rename-input:focus {
+  border-color: #2563eb;
+}
+
+.quick-rename-input.is-error,
+.quick-rename-input.is-error:focus {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2);
+}
+
+/* Quick Suggestion Chips */
+.quick-rename-chips {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.chip-btn {
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.chip-btn[hidden] {
+  display: none;
+}
+
+.chip-btn:hover {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #2563eb;
+}
+
+.quick-rename-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+/* Perceived Speed Skeleton Loading Overlay */
+#loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 100000;
+  gap: 16px;
+  transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: opacity;
+}
+
+.skeleton-toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 12px;
+}
+
+.skeleton-item {
+  width: 32px;
+  height: 32px;
+  background: #f1f5f9;
+  border-radius: 6px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #e2e8f0;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: #475569;
+  letter-spacing: -0.2px;
+}

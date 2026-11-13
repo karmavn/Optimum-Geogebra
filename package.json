@@ -1,0 +1,38 @@
+{
+  "name": "geogebra-quick-rename",
+  "version": "1.0.0",
+  "description": "GeoGebra Desktop with Quick Right-Click Point Renaming",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "keywords": [
+    "geogebra",
+    "electron",
+    "math",
+    "geometry",
+    "quick-rename"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.geogebra.quickrename",
+    "productName": "GeoGebra Quick Rename",
+    "files": [
+      "**/*",
+      "!geogebra-offline/GeoGebra/HTML5/5.0/web{,/**}",
+      "!geogebra-offline/GeoGebra/HTML5/5.0/webSimple{,/**}",
+      "!measure.ps1",
+      "!OPTIMIZE_REPORT.md"
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  }
+}

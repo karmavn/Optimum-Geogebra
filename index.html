@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GeoGebra Quick Rename</title>
+  <link rel="stylesheet" href="styles.css">
+  <!-- Non-blocking defer scripts so skeleton loading overlay parses and paints immediately -->
+  <script defer src="geogebra-offline/GeoGebra/deployggb.js"></script>
+  <script defer src="src/quick-rename.js"></script>
+</head>
+<body>
+  <!-- Màn hình Loading với Skeleton Toolbar cải thiện Perceived Speed -->
+  <div id="loading-overlay">
+    <div class="skeleton-toolbar">
+      <div class="skeleton-item"></div>
+      <div class="skeleton-item"></div>
+      <div class="skeleton-item"></div>
+      <div class="skeleton-item"></div>
+      <div class="skeleton-item"></div>
+      <div class="skeleton-item"></div>
+      <div class="skeleton-item"></div>
+    </div>
+    <div class="spinner"></div>
+    <div class="loading-text">Đang khởi tạo GeoGebra Offline với tính năng Đổi tên nhanh...</div>
+  </div>
+
+  <div id="app-container">
+    <div id="ggb-container"></div>
+  </div>
+
+  <script>
+    let ggbApiInstance = null;
+
+    window.addEventListener('DOMContentLoaded', () => {
+      let resizeRafId = null;
+      let lastResizeWidth = window.innerWidth;
+      let lastResizeHeight = window.innerHeight;
+      let resizeBound = false;
+
+      // Đăng ký Electron IPC một lần duy nhất ngoài appletOnLoad để tránh rò rỉ listener
+      if (window.electronAPI) {
+        window.electronAPI.onLoadGgbFile((base64Data) => {
+          if (ggbApiInstance && typeof ggbApiInstance.setBase64 === 'function') {
+            ggbApiInstance.setBase64(base64Data);
+          }
+        });
+
+        window.electronAPI.onRequestSaveGgb(() => {
+          if (ggbApiInstance && typeof ggbApiInstance.getBase64 === 'function') {
+            ggbApiInstance.getBase64(async (base64) => {
+              await window.electronAPI.saveGgbDialog(base64);
+            });
+          }
+        });
+      }
+
+      function applyViewportSize(api, scaler) {
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        if (w !== lastResizeWidth || h !== lastResizeHeight) {
+          lastResizeWidth = w;
+          lastResizeHeight = h;
+          params.width = w;
+          params.height = h;
+          if (scaler) {
+            scaler.style.width = `${w}px`;
+            scaler.style.height = `${h}px`;
+          }
+          if (api && typeof api.setSize === 'function') {
+            api.setSize(w, h);
+          }
+        }
+      }
+
+      // Cấu hình GeoGebra Applet
+      const params = {
+        "appName": "classic",
+        "width": lastResizeWidth,
+        "height": lastResizeHeight,
+        "disableAutoScale": true,
+        "showToolBar": true,
+        "showMenuBar": true,
+        "showAlgebraInput": true,
+        "showResetIcon": true,
+        "enableLabelDrags": false,
+        "enableShiftDragZoom": true,
+        "enableRightClick": true,
+        "showToolBarHelp": false,
+        "errorDialogsActive": true,
+        "useBrowserForJS": false,
+        "allowStyleBar": true,
+        "preventAutoScroll": true,
+        "appletOnLoad": function(api) {
+          ggbApiInstance = api;
+
+          // Cho phép tương tác ngay lập tức khi canvas sẵn sàng, không chặn chuột trong lúc fade-out
+          const overlay = document.getElementById('loading-overlay');
+          if (overlay) {
+            let removed = false;
+            const cleanupOverlay = () => {
+              if (!removed) {
+                removed = true;
+                overlay.remove();
+              }
+            };
+            overlay.style.pointerEvents = 'none';
+            overlay.style.opacity = '0';
+            overlay.addEventListener('transitionend', cleanupOverlay, { once: true });
+            setTimeout(cleanupOverlay, 300);
+          }
+
+          // Kích hoạt tính năng Đổi tên nhanh
+          if (window.initQuickRename) {
+            window.initQuickRename(api);
+          }
+
+          const scaler = document.querySelector('#ggb-container > .applet_scaler');
+          applyViewportSize(api, scaler);
+
+          if (!resizeBound) {
+            resizeBound = true;
+            // Performance: Điều phối Resize bằng rAF thay cho responsiveResize của deployggb.js
+            window.addEventListener('resize', () => {
+              if (resizeRafId) return;
+              resizeRafId = requestAnimationFrame(() => {
+                resizeRafId = null;
+                applyViewportSize(ggbApiInstance, scaler);
+              });
+            }, { passive: true });
+          }
+        }
+      };
+
+      const applet = new GGBApplet(params, true);
+      if (typeof applet.setHTML5Codebase === 'function') {
+        applet.setHTML5Codebase('geogebra-offline/GeoGebra/HTML5/5.0/web3d/', true);
+      }
+      applet.inject('ggb-container');
+      // Vô hiệu hóa responsiveResize đồng bộ của deployggb.js để tránh forced layout & CSS downscale
+      applet.resize = function() {};
+    });
+  </script>
+</body>
+</html>
