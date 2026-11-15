@@ -91,4 +91,55 @@ describe('Pyramid Builder Tests', () => {
     assert.deepEqual(res.foot.coords, [2, 0, 0]);
     assert.deepEqual(res.points.S, [2, 0, 5]);
   });
+
+  it('should correctly support SC_vuong_goc_day with foot at C', () => {
+    const res = buildPyramidCommands({
+      type: 'tam_giac',
+      base_shape: 'tam_giac_vuong_A',
+      height_type: 'SC_vuong_goc_day',
+      dimensions: { a: 4, b: 3, h: 5 }
+    });
+
+    assert.equal(res.foot.label, 'C');
+    assert.deepEqual(res.foot.coords, [0, 3, 0]);
+    assert.deepEqual(res.points.S, [0, 3, 5]);
+    assert.ok(res.explanation.includes('SC'));
+  });
+
+  it('should fallback dimension leg b in tam_giac_vuong_B when c is omitted', () => {
+    const res = buildPyramidCommands({
+      type: 'tam_giac',
+      base_shape: 'tam_giac_vuong_B',
+      dimensions: { a: 4, b: 3, h: 5 }
+    });
+
+    assert.deepEqual(res.points.B, [0, 0, 0]);
+    assert.deepEqual(res.points.A, [0, 4, 0]);
+    assert.deepEqual(res.points.C, [3, 0, 0]);
+    assert.equal(res.baseArea, 6);
+  });
+
+  it('should assign default foot label G for SH_trong_tam', () => {
+    const res = buildPyramidCommands({
+      type: 'tam_giac',
+      base_shape: 'tam_giac_deu',
+      height_type: 'SH_trong_tam',
+      dimensions: { a: 6, h: 5 }
+    });
+
+    assert.equal(res.foot.label, 'G');
+    assert.ok(res.commands.some(cmd => cmd.includes('duong_cao_SG')));
+  });
+
+  it('should support scalene triangle base (tam_giac_thuong)', () => {
+    const res = buildPyramidCommands({
+      type: 'tam_giac',
+      base_shape: 'tam_giac_thuong',
+      dimensions: { a: 5, b: 4, c: 6, h: 5 }
+    });
+
+    assert.ok(res.baseArea > 0);
+    assert.equal(res.points.B[0], 6);
+    assert.ok(res.explanation.includes('tam giác thường'));
+  });
 });

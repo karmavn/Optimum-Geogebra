@@ -70,4 +70,35 @@ describe('GeoGebra Bridge Unit Tests', () => {
       return true;
     });
   });
+
+  it('should enforce .ggb extension on handleSave', async () => {
+    let savedPath = '';
+    const mockWin = {
+      isDestroyed: () => false,
+      webContents: {
+        executeJavaScript: async () => 'base64testdata'
+      }
+    };
+    const bridge = new GeoGebraBridge(() => mockWin);
+    const mockRes = {
+      writeHead(status, headers) {
+        this.status = status;
+      },
+      end(data) {
+        const json = JSON.parse(data);
+        savedPath = json.filePath;
+      }
+    };
+
+    // Pass filePath without .ggb extension
+    const os = require('os');
+    const path = require('path');
+    const tempFile = path.join(os.tmpdir(), 'test-save-no-ext');
+    await bridge.handleSave({ filePath: tempFile }, mockRes);
+
+    assert.ok(savedPath.endsWith('.ggb'));
+    // cleanup
+    const fs = require('fs');
+    if (fs.existsSync(savedPath)) fs.unlinkSync(savedPath);
+  });
 });

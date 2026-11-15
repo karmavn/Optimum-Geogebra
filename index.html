@@ -107,8 +107,10 @@
                 const trimmed = String(c).trim();
                 if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
                 try {
-                  ggbApiInstance.evalCommand(trimmed);
-                  executed.push(trimmed);
+                  const ok = ggbApiInstance.evalCommand(trimmed);
+                  if (ok !== false) {
+                    executed.push(trimmed);
+                  }
                 } catch (err) {
                   console.warn('Lỗi lệnh GeoGebra:', trimmed, err);
                 }
@@ -153,16 +155,22 @@
                 const trimmed = String(c).trim();
                 if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
                 try {
-                  ggbApiInstance.evalCommand(trimmed);
-                  executed.push(trimmed);
+                  const ok = ggbApiInstance.evalCommand(trimmed);
+                  if (ok !== false) {
+                    executed.push(trimmed);
+                  }
                 } catch (err) {
                   console.warn('Lỗi lệnh GeoGebra:', trimmed, err);
                 }
               }
-              // Chờ 2 frame rAF để GPU WebGL hoàn thành repaint thay vì setTimeout cố định
+              // Chờ 2 frame rAF để GPU WebGL hoàn thành repaint (có timeout dự phòng nếu tab/cửa sổ đang ẩn)
               await new Promise((resolve) => {
+                const timer = setTimeout(resolve, 100);
                 requestAnimationFrame(() => {
-                  requestAnimationFrame(resolve);
+                  requestAnimationFrame(() => {
+                    clearTimeout(timer);
+                    resolve();
+                  });
                 });
               });
               return {

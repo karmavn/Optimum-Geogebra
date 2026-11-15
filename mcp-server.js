@@ -257,10 +257,19 @@ server.tool(
 server.tool(
   'geogebra_get_objects',
   'Lấy danh sách tất cả các điểm, đoạn thẳng, đa giác, khối đa diện hiện có trên GeoGebra cùng với tọa độ và định nghĩa.',
-  {},
-  async () => {
+  {
+    type: z.string().optional().describe('Lọc theo loại đối tượng (ví dụ: point, segment, polygon, pyramid...)'),
+    limit: z.number().optional().describe('Giới hạn số lượng đối tượng tối đa cần lấy')
+  },
+  async ({ type, limit }) => {
     try {
-      const result = await requestBridge('/objects', 'GET');
+      const params = new URLSearchParams();
+      if (type) params.append('type', type);
+      if (typeof limit === 'number') params.append('limit', String(limit));
+      const queryString = params.toString();
+      const endpoint = queryString ? `/objects?${queryString}` : '/objects';
+
+      const result = await requestBridge(endpoint, 'GET');
       return {
         content: [{
           type: 'text',

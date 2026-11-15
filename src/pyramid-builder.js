@@ -41,7 +41,7 @@ function buildPyramidCommands(options = {}) {
   const h = Number(dimensions.h) || 5;
 
   const apexLabel = labels.apex || 'S';
-  const footLabel = labels.height_foot || 'H';
+  const footLabel = labels.height_foot; // Giữ nguyên để từng loại đường cao chọn ký hiệu mặc định phù hợp (H, O, G)
   const baseLabels = labels.base || (type === 'tam_giac' ? ['A', 'B', 'C'] : ['A', 'B', 'C', 'D']);
 
   let pts = {};
@@ -71,12 +71,13 @@ function buildPyramidCommands(options = {}) {
         break;
       }
       case 'tam_giac_vuong_B': {
-        // Vuông tại B: BA = a (Oy), BC = c (Ox)
+        // Vuông tại B: BA = a (Oy), BC = sideBC (Ox)
+        const sideBC = Number(dimensions.c) || Number(dimensions.b) || 4;
         pts[lB] = [0, 0, 0];
         pts[lA] = [0, a, 0];
-        pts[lC] = [c, 0, 0];
-        baseArea = 0.5 * a * c;
-        explanationLines.push(`- Đáy ${lA}${lB}${lC} là tam giác vuông tại ${lB} (cạnh ${lB}${lA} = ${a}, ${lB}${lC} = ${c})`);
+        pts[lC] = [sideBC, 0, 0];
+        baseArea = 0.5 * a * sideBC;
+        explanationLines.push(`- Đáy ${lA}${lB}${lC} là tam giác vuông tại ${lB} (cạnh ${lB}${lA} = ${a}, ${lB}${lC} = ${sideBC})`);
         break;
       }
       case 'tam_giac_vuong_C': {
@@ -98,6 +99,18 @@ function buildPyramidCommands(options = {}) {
         pts[lA] = [halfA, hCan, 0];
         baseArea = 0.5 * a * hCan;
         explanationLines.push(`- Đáy ${lA}${lB}${lC} là tam giác cân tại ${lA} (đáy ${lB}${lC} = ${a}, cạnh bên = ${roundNum(sideB)})`);
+        break;
+      }
+      case 'tam_giac_thuong': {
+        // Tam giác thường với cạnh đáy AB = sideC, cạnh AC = b
+        const sideC = Number(dimensions.c) || Math.sqrt(a * a + b * b - a * b);
+        const cosA = Math.max(-0.99, Math.min(0.99, (b * b + sideC * sideC - a * a) / (2 * b * sideC)));
+        const sinA = Math.sqrt(1 - cosA * cosA);
+        pts[lA] = [0, 0, 0];
+        pts[lB] = [sideC, 0, 0];
+        pts[lC] = [roundNum(b * cosA), roundNum(b * sinA), 0];
+        baseArea = 0.5 * sideC * b * sinA;
+        explanationLines.push(`- Đáy ${lA}${lB}${lC} là tam giác thường (cạnh đáy ${lA}${lB} = ${roundNum(sideC)}, cạnh ${lA}${lC} = ${b})`);
         break;
       }
       case 'tam_giac_vuong_A':
@@ -218,6 +231,10 @@ function buildPyramidCommands(options = {}) {
     foot = { label: lB, coords: [...pts[lB]] };
     pts[apexLabel] = [pts[lB][0], pts[lB][1], h];
     explanationLines.push(`- Cạnh bên ${apexLabel}${lB} $\\perp$ (đáy), chiều cao ${apexLabel}${lB} = ${h}`);
+  } else if (height_type === 'SC_vuong_goc_day' || height_type === 'edge_C') {
+    foot = { label: lC, coords: [...pts[lC]] };
+    pts[apexLabel] = [pts[lC][0], pts[lC][1], h];
+    explanationLines.push(`- Cạnh bên ${apexLabel}${lC} $\\perp$ (đáy), chiều cao ${apexLabel}${lC} = ${h}`);
   } else if (height_type === 'SH_trung_diem_AB') {
     // Mặt bên (SAB) vuông góc đáy, tam giác SAB cân/đều => H là trung điểm AB
     const hx = (pts[lA][0] + pts[lB][0]) / 2;

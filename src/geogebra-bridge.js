@@ -20,13 +20,30 @@ class GeoGebraBridge {
   start() {
     return new Promise((resolve, reject) => {
       this.server = http.createServer(async (req, res) => {
-        // CORS headers
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        // Host validation (Bảo vệ chống tấn công DNS Rebinding)
+        const host = req.headers.host || '';
+        if (!host.startsWith('127.0.0.1') && !host.startsWith('localhost')) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Access forbidden: invalid host' }));
+          return;
+        }
+
+        // Kiểm tra và bảo vệ CORS (Chỉ cho phép nguồn cục bộ, chặn hoàn toàn CSRF từ các website bên ngoài)
+        const origin = req.headers.origin;
+        const isLocalOrigin = origin && (
+          origin.startsWith('http://127.0.0.1') ||
+          origin.startsWith('http://localhost') ||
+          origin.startsWith('app://')
+        );
+
+        if (isLocalOrigin) {
+          res.setHeader('Access-Control-Allow-Origin', origin);
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        }
 
         if (req.method === 'OPTIONS') {
-          res.writeHead(204);
+          res.writeHead(isLocalOrigin || !origin ? 204 : 403);
           res.end();
           return;
         }
@@ -66,9 +83,11 @@ class GeoGebraBridge {
           }
         } catch (err) {
           console.error('Bridge error on', pathname, err);
-          const statusCode = err.statusCode || (err.message && err.message.includes('too large') ? 413 : 500);
-          res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err.message || String(err) }));
+          if (!res.headersSent && !res.destroyed) {
+            const statusCode = err.statusCode || (err.message && err.message.includes('too large') ? 413 : 500);
+            res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message || String(err) }));
+          }
         }
       });
 
@@ -267,7 +286,10 @@ class GeoGebraBridge {
       return;
     }
 
-    const resolvedPath = path.resolve(rawPath.trim());
+    let resolvedPath = path.resolve(rawPath.trim());
+    if (!resolvedPath.toLowerCase().endsWith('.ggb')) {
+      resolvedPath += '.ggb';
+    }
 
     const base64Data = await this.runInRenderer(`
       new Promise((resolve, reject) => {
@@ -315,7 +337,10 @@ class GeoGebraBridge {
       return;
     }
 
-    const resolvedPath = path.resolve(rawPath.trim());
+    let resolvedPath = path.resolve(rawPath.trim());
+    if (!resolvedPath.toLowerCase().endsWith('.ggb')) {
+      resolvedPath += '.ggb';
+    }
     if (!fs.existsSync(resolvedPath)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'File not found: ' + resolvedPath }));
