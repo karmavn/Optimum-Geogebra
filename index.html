@@ -135,6 +135,42 @@
               }
               return { success: true };
             },
+            renderPyramidBatch: async (options = {}) => {
+              if (!ggbApiInstance) throw new Error('GeoGebra Applet chưa sẵn sàng');
+              if (options.clearBefore !== false) {
+                if (typeof ggbApiInstance.newConstruction === 'function') {
+                  ggbApiInstance.newConstruction();
+                } else if (typeof ggbApiInstance.reset === 'function') {
+                  ggbApiInstance.reset();
+                }
+              }
+              if (typeof ggbApiInstance.setPerspective === 'function') {
+                ggbApiInstance.setPerspective(options.perspective || 'T');
+              }
+              const list = Array.isArray(options.commands) ? options.commands : [options.commands];
+              const executed = [];
+              for (const c of list) {
+                const trimmed = String(c).trim();
+                if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
+                try {
+                  ggbApiInstance.evalCommand(trimmed);
+                  executed.push(trimmed);
+                } catch (err) {
+                  console.warn('Lỗi lệnh GeoGebra:', trimmed, err);
+                }
+              }
+              // Chờ 2 frame rAF để GPU WebGL hoàn thành repaint thay vì setTimeout cố định
+              await new Promise((resolve) => {
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(resolve);
+                });
+              });
+              return {
+                success: true,
+                executedCount: executed.length,
+                totalObjects: (ggbApiInstance.getAllObjectNames && ggbApiInstance.getAllObjectNames().length) || 0
+              };
+            },
             getScreenshot: () => {
               return new Promise((resolve) => {
                 if (!ggbApiInstance || typeof ggbApiInstance.getPNGBase64 !== 'function') {

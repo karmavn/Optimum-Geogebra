@@ -24,7 +24,11 @@ $files = @(
     "main.js",
     "preload.js",
     "styles.css",
-    "src\quick-rename.js"
+    "src\quick-rename.js",
+    "src\geogebra-bridge.js",
+    "src\pyramid-builder.js",
+    "mcp-server.js",
+    "run-electron.js"
 )
 $totalBytes = 0
 foreach ($f in $files) {
@@ -45,7 +49,7 @@ Get-ChildItem "geogebra-offline\GeoGebra\HTML5\5.0" -Directory | ForEach-Object 
 }
 
 Write-Host "`n=== SYNTAX VALIDATION ==="
-foreach ($js in @("main.js", "preload.js", "src\quick-rename.js")) {
+foreach ($js in @("main.js", "preload.js", "src\quick-rename.js", "src\geogebra-bridge.js", "src\pyramid-builder.js", "mcp-server.js", "run-electron.js")) {
     $res = node --check $js 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Syntax check passed: $js"

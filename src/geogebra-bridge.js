@@ -51,7 +51,7 @@ class GeoGebraBridge {
           } else if (req.method === 'GET' && pathname === '/screenshot') {
             await this.handleScreenshot(res);
           } else if (req.method === 'GET' && pathname === '/objects') {
-            await this.handleGetObjects(res);
+            await this.handleGetObjects(req, res);
           } else if (req.method === 'POST' && pathname === '/save') {
             const body = await this.parseJsonBody(req);
             await this.handleSave(body, res);
@@ -168,26 +168,28 @@ class GeoGebraBridge {
       win.show();
     }
 
-    // Tự động chuyển góc nhìn 3D và dọn dẹp trước nếu được yêu cầu
-    if (body.clear_before !== false) {
-      await this.runInRenderer(`window.ggbBridge.reset()`);
-    }
-
-    // Luôn mở chế độ 3D Graphics View
-    await this.runInRenderer(`window.ggbBridge.setPerspective("T")`);
-
     // Tạo tập lệnh từ pyramid-builder
     const pyramidData = buildPyramidCommands(body);
 
-    // Chạy các lệnh dựng hình
-    const evalRes = await this.runInRenderer(
-      `window.ggbBridge.evalCommands(${JSON.stringify(pyramidData.commands)})`
-    );
+    // Tối ưu hóa hiệu năng: Chạy nguyên khối trong một lần gọi renderer duy nhất (Atomic Batch)
+    // kết hợp đồng bộ hóa 2 frame rAF thay vì 4 lần IPC tuần tự và 400ms sleep
+    const evalRes = await this.runInRenderer(`
+      (async () => {
+        if (window.ggbBridge && typeof window.ggbBridge.renderPyramidBatch === 'function') {
+          return await window.ggbBridge.renderPyramidBatch({
+            commands: ${JSON.stringify(pyramidData.commands)},
+            perspective: "T",
+            clearBefore: ${body.clear_before !== false}
+          });
+        } else {
+          if (${body.clear_before !== false}) window.ggbBridge.reset();
+          window.ggbBridge.setPerspective("T");
+          return window.ggbBridge.evalCommands(${JSON.stringify(pyramidData.commands)});
+        }
+      })()
+    `);
 
-    // Chờ một chút để canvas 3D render hoàn tất
-    await new Promise(r => setTimeout(r, 400));
-
-    // Lấy ảnh chụp màn hình
+    // Lấy ảnh chụp màn hình ngay khi frame vừa được render
     let screenshotBase64 = null;
     try {
       screenshotBase64 = await this.captureScreenshot();
@@ -228,15 +230,8 @@ class GeoGebraBridge {
     const win = this.getMainWindow();
     if (!win || win.isDestroyed()) return null;
 
-    // Cách 1: Thử lấy trực tiếp từ GeoGebra
-    try {
-      const ggbPng = await this.runInRenderer(`window.ggbBridge.getScreenshot()`);
-      if (ggbPng && ggbPng.length > 100) {
-        return ggbPng.startsWith('data:') ? ggbPng : `data:image/png;base64,${ggbPng}`;
-      }
-    } catch (e) {}
-
-    // Cách 2: Chụp canvas/page từ Electron (siêu mượt và 100% tin cậy)
+    // Chụp trực tiếp canvas/viewport từ Chromium GPU surface (Native C++ GPU capture, < 20ms)
+    // Tránh độ trễ lớn khi GWT biên dịch lại 3D canvas sang PNG trong JavaScript
     const nativeImage = await win.webContents.capturePage();
     const buffer = nativeImage.toPNG();
     return `data:image/png;base64,${buffer.toString('base64')}`;
@@ -248,8 +243,18 @@ class GeoGebraBridge {
     res.end(JSON.stringify({ success: !!imgData, image: imgData }));
   }
 
-  async handleGetObjects(res) {
-    const objects = await this.runInRenderer(`window.ggbBridge.getObjects()`);
+  async handleGetObjects(req, res) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const filterType = url.searchParams.get('type') || null;
+    const limit = parseInt(url.searchParams.get('limit'), 10) || null;
+
+    let objects = await this.runInRenderer(`window.ggbBridge.getObjects()`);
+    if (filterType) {
+      objects = objects.filter(o => o.type && o.type.toLowerCase() === filterType.toLowerCase());
+    }
+    if (limit && limit > 0) {
+      objects = objects.slice(0, limit);
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, count: objects.length, objects }));
   }

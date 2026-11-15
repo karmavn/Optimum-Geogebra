@@ -66,7 +66,11 @@ async function requestBridge(endpoint, method = 'GET', body = null) {
   await ensureAppRunning();
   const options = {
     method,
-    headers: { 'Content-Type': 'application/json' }
+    headers: {
+      'Content-Type': 'application/json',
+      'Connection': 'keep-alive'
+    },
+    signal: AbortSignal.timeout(30000)
   };
   if (body) {
     options.body = JSON.stringify(body);
