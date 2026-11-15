@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu, protocol, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const GeoGebraBridge = require('./src/geogebra-bridge');
 
 const APP_ROOT = path.resolve(__dirname);
 const MIME_TYPES = {
@@ -217,18 +218,46 @@ ipcMain.handle('save-ggb-dialog', async (_event, base64Data) => {
   }
 });
 
-app.whenReady().then(() => {
+let bridge = null;
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
+app.whenReady().then(async () => {
   session.defaultSession.setCodeCachePath(path.join(app.getPath('userData'), 'Code Cache'));
   registerAppProtocol();
   // Set application menu before creating BrowserWindow so initial viewport dimensions are accurate
   Menu.setApplicationMenu(buildAppMenu());
   createWindow();
+
+  // Khởi động HTTP Bridge cho MCP Server / Agent
+  bridge = new GeoGebraBridge(() => mainWindow);
+  try {
+    await bridge.start();
+  } catch (err) {
+    console.warn('[GeoGebraBridge] Không thể khởi động bridge server:', err.message);
+  }
 });
 
 app.on('window-all-closed', () => {
+  if (bridge) bridge.stop();
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('will-quit', () => {
+  if (bridge) bridge.stop();
 });
 
 app.on('activate', () => {

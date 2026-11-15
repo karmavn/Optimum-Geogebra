@@ -4,7 +4,8 @@
   "description": "GeoGebra Desktop with Quick Right-Click Point Renaming",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "node run-electron.js",
+    "mcp": "node mcp-server.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"
   },
@@ -34,5 +35,9 @@
     "win": {
       "target": "nsis"
     }
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
   }
 }

@@ -93,6 +93,82 @@
         "preventAutoScroll": true,
         "appletOnLoad": function(api) {
           ggbApiInstance = api;
+          window.ggbApiInstance = api;
+          window.ggbApplet = api;
+
+          // Cung cấp bridge API cho Agent / MCP Server
+          window.ggbBridge = {
+            isReady: () => !!(ggbApiInstance && typeof ggbApiInstance.evalCommand === 'function'),
+            evalCommands: (cmds) => {
+              if (!ggbApiInstance) throw new Error('GeoGebra Applet chưa sẵn sàng');
+              const list = Array.isArray(cmds) ? cmds : [cmds];
+              const executed = [];
+              for (const c of list) {
+                const trimmed = String(c).trim();
+                if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
+                try {
+                  ggbApiInstance.evalCommand(trimmed);
+                  executed.push(trimmed);
+                } catch (err) {
+                  console.warn('Lỗi lệnh GeoGebra:', trimmed, err);
+                }
+              }
+              return {
+                success: true,
+                executedCount: executed.length,
+                totalObjects: (ggbApiInstance.getAllObjectNames && ggbApiInstance.getAllObjectNames().length) || 0
+              };
+            },
+            reset: () => {
+              if (!ggbApiInstance) return { success: false };
+              if (typeof ggbApiInstance.newConstruction === 'function') {
+                ggbApiInstance.newConstruction();
+              } else if (typeof ggbApiInstance.reset === 'function') {
+                ggbApiInstance.reset();
+              }
+              return { success: true };
+            },
+            setPerspective: (p) => {
+              if (!ggbApiInstance) return { success: false };
+              if (typeof ggbApiInstance.setPerspective === 'function') {
+                ggbApiInstance.setPerspective(p || 'T');
+              }
+              return { success: true };
+            },
+            getScreenshot: () => {
+              return new Promise((resolve) => {
+                if (!ggbApiInstance || typeof ggbApiInstance.getPNGBase64 !== 'function') {
+                  return resolve(null);
+                }
+                try {
+                  const res = ggbApiInstance.getPNGBase64(1, false, 72, (data) => {
+                    resolve(data || null);
+                  });
+                  if (res && typeof res === 'string') resolve(res);
+                } catch (e) {
+                  resolve(null);
+                }
+              });
+            },
+            getObjects: () => {
+              if (!ggbApiInstance || typeof ggbApiInstance.getAllObjectNames !== 'function') return [];
+              const names = ggbApiInstance.getAllObjectNames();
+              return names.map((name) => {
+                const type = ggbApiInstance.getObjectType ? ggbApiInstance.getObjectType(name) : '';
+                const value = ggbApiInstance.getValueString ? ggbApiInstance.getValueString(name) : '';
+                const def = ggbApiInstance.getCommandString ? ggbApiInstance.getCommandString(name) : '';
+                let coords = null;
+                if (type === 'point') {
+                  coords = [
+                    ggbApiInstance.getXcoord ? ggbApiInstance.getXcoord(name) : 0,
+                    ggbApiInstance.getYcoord ? ggbApiInstance.getYcoord(name) : 0,
+                    ggbApiInstance.getZcoord ? ggbApiInstance.getZcoord(name) : 0
+                  ];
+                }
+                return { name, type, value, definition: def, coords };
+              });
+            }
+          };
 
           // Cho phép tương tác ngay lập tức khi canvas sẵn sàng, không chặn chuột trong lúc fade-out
           const overlay = document.getElementById('loading-overlay');
