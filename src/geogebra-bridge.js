@@ -144,6 +144,17 @@ class GeoGebraBridge {
     return await win.webContents.executeJavaScript(jsCode);
   }
 
+  bringToFront() {
+    const win = this.getMainWindow();
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.setAlwaysOnTop(true);
+      win.focus();
+      win.setAlwaysOnTop(false);
+    }
+  }
+
   async handleStatus(res) {
     const win = this.getMainWindow();
     if (!win || win.isDestroyed()) {
@@ -164,7 +175,13 @@ class GeoGebraBridge {
         })()
       `);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ running: true, appletReady: status.ready, objectCount: status.objectCount }));
+      res.end(JSON.stringify({
+        running: true,
+        appletReady: status.ready,
+        objectCount: status.objectCount,
+        windowVisible: win.isVisible(),
+        windowMinimized: win.isMinimized()
+      }));
     } catch (err) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ running: true, appletReady: false, error: err.message }));
@@ -172,6 +189,7 @@ class GeoGebraBridge {
   }
 
   async handleEval(body, res) {
+    this.bringToFront();
     const commands = body.commands || [];
     const cmdsArray = Array.isArray(commands) ? commands : [commands];
     const js = `window.ggbBridge.evalCommands(${JSON.stringify(cmdsArray)})`;
@@ -181,11 +199,7 @@ class GeoGebraBridge {
   }
 
   async handlePyramid(body, res) {
-    const win = this.getMainWindow();
-    if (win && !win.isDestroyed()) {
-      if (win.isMinimized()) win.restore();
-      win.show();
-    }
+    this.bringToFront();
 
     // Tạo tập lệnh từ pyramid-builder
     const pyramidData = buildPyramidCommands(body);
@@ -357,17 +371,13 @@ class GeoGebraBridge {
       })()
     `);
 
+    this.bringToFront();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, filePath: resolvedPath }));
   }
 
   async handleFocus(res) {
-    const win = this.getMainWindow();
-    if (win && !win.isDestroyed()) {
-      if (win.isMinimized()) win.restore();
-      win.show();
-      win.focus();
-    }
+    this.bringToFront();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true }));
   }

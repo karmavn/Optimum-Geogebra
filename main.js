@@ -154,6 +154,15 @@ function buildAppMenu() {
   return Menu.buildFromTemplate(menuTemplate);
 }
 
+function bringWindowToFront(win) {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.setAlwaysOnTop(true);
+  win.focus();
+  win.setAlwaysOnTop(false);
+}
+
 function createWindow() {
   const iconPath = path.join(APP_ROOT, 'icon.png');
   const windowOptions = {
@@ -161,7 +170,7 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    show: false, // Performance: Tránh giật/nháy trắng khi tải
+    show: true, // Luôn hiển thị ngay để người dùng nhìn thấy cửa sổ GeoGebra trên màn hình
     backgroundColor: '#f8fafc',
     title: 'GeoGebra Custom - Quick Rename (Offline Edition)',
     webPreferences: {
@@ -180,12 +189,19 @@ function createWindow() {
 
   mainWindow = new BrowserWindow(windowOptions);
 
-  // Hiển thị mượt mà khi DOM và renderer đã sẵn sàng
+  // Đảm bảo đưa cửa sổ lên phía trước khi sẵn sàng
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show();
+      bringWindowToFront(mainWindow);
     }
   });
+
+  // Dự phòng an toàn: Đảm bảo cửa sổ luôn được hiển thị và focus
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      bringWindowToFront(mainWindow);
+    }
+  }, 1000);
 
   mainWindow.loadURL('app://local/index.html');
 
