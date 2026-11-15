@@ -8,6 +8,7 @@ const path = require('path');
 const { buildPyramidCommands } = require('./pyramid-builder');
 
 const DEFAULT_PORT = 3999;
+const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB limit to prevent DoS/memory issues
 
 class GeoGebraBridge {
   constructor(getMainWindow) {
@@ -65,7 +66,8 @@ class GeoGebraBridge {
           }
         } catch (err) {
           console.error('Bridge error on', pathname, err);
-          res.writeHead(500, { 'Content-Type': 'application/json' });
+          const statusCode = err.statusCode || (err.message && err.message.includes('too large') ? 413 : 500);
+          res.writeHead(statusCode, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message || String(err) }));
         }
       });
@@ -87,14 +89,30 @@ class GeoGebraBridge {
   parseJsonBody(req) {
     return new Promise((resolve, reject) => {
       let data = '';
-      req.on('data', chunk => { data += chunk; });
+      let receivedBytes = 0;
+
+      req.on('data', chunk => {
+        receivedBytes += chunk.length;
+        if (receivedBytes > MAX_BODY_SIZE) {
+          req.destroy();
+          const err = new Error(`Request body too large (max ${MAX_BODY_SIZE / (1024 * 1024)}MB)`);
+          err.statusCode = 413;
+          reject(err);
+          return;
+        }
+        data += chunk;
+      });
+
       req.on('end', () => {
         try {
           resolve(data ? JSON.parse(data) : {});
         } catch (err) {
-          reject(new Error('Invalid JSON in request body'));
+          const parseErr = new Error('Invalid JSON in request body');
+          parseErr.statusCode = 400;
+          reject(parseErr);
         }
       });
+
       req.on('error', reject);
     });
   }
@@ -237,37 +255,69 @@ class GeoGebraBridge {
   }
 
   async handleSave(body, res) {
-    const filePath = body.filePath;
-    if (!filePath) {
+    const rawPath = body.filePath;
+    if (!rawPath || typeof rawPath !== 'string' || !rawPath.trim()) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'filePath is required' }));
+      res.end(JSON.stringify({ error: 'filePath is required and must be a non-empty string' }));
       return;
     }
+
+    const resolvedPath = path.resolve(rawPath.trim());
 
     const base64Data = await this.runInRenderer(`
       new Promise((resolve, reject) => {
         if (!window.ggbApiInstance) return reject(new Error('Applet not ready'));
-        window.ggbApiInstance.getBase64((data) => resolve(data));
+        let done = false;
+        const timer = setTimeout(() => {
+          if (!done) {
+            done = true;
+            reject(new Error('GeoGebra getBase64 timed out after 10s'));
+          }
+        }, 10000);
+
+        try {
+          window.ggbApiInstance.getBase64((data) => {
+            if (!done) {
+              done = true;
+              clearTimeout(timer);
+              if (data) resolve(data);
+              else reject(new Error('GeoGebra getBase64 returned empty data'));
+            }
+          });
+        } catch (err) {
+          if (!done) {
+            done = true;
+            clearTimeout(timer);
+            reject(err);
+          }
+        }
       })
     `);
 
     const buffer = Buffer.from(base64Data, 'base64');
-    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.promises.writeFile(filePath, buffer);
+    await fs.promises.mkdir(path.dirname(resolvedPath), { recursive: true });
+    await fs.promises.writeFile(resolvedPath, buffer);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: true, filePath, bytes: buffer.length }));
+    res.end(JSON.stringify({ success: true, filePath: resolvedPath, bytes: buffer.length }));
   }
 
   async handleLoad(body, res) {
-    const filePath = body.filePath;
-    if (!filePath || !fs.existsSync(filePath)) {
+    const rawPath = body.filePath;
+    if (!rawPath || typeof rawPath !== 'string' || !rawPath.trim()) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'File not found: ' + filePath }));
+      res.end(JSON.stringify({ error: 'filePath is required and must be a non-empty string' }));
       return;
     }
 
-    const fileBuffer = await fs.promises.readFile(filePath);
+    const resolvedPath = path.resolve(rawPath.trim());
+    if (!fs.existsSync(resolvedPath)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'File not found: ' + resolvedPath }));
+      return;
+    }
+
+    const fileBuffer = await fs.promises.readFile(resolvedPath);
     const base64 = fileBuffer.toString('base64');
     await this.runInRenderer(`
       (() => {
@@ -278,7 +328,7 @@ class GeoGebraBridge {
     `);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: true, filePath }));
+    res.end(JSON.stringify({ success: true, filePath: resolvedPath }));
   }
 
   async handleFocus(res) {
