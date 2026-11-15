@@ -3,6 +3,13 @@ const path = require('path');
 const fs = require('fs');
 const GeoGebraBridge = require('./src/geogebra-bridge');
 
+process.on('uncaughtException', (err) => {
+  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[uncaughtException] ${err.stack || err}\n`);
+});
+process.on('unhandledRejection', (reason) => {
+  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[unhandledRejection] ${reason && reason.stack || reason}\n`);
+});
+
 const APP_ROOT = path.resolve(__dirname);
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -189,6 +196,16 @@ function createWindow() {
 
   mainWindow = new BrowserWindow(windowOptions);
 
+  mainWindow.webContents.on('did-fail-load', (e, errorCode, errorDescription, validatedURL) => {
+    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[webContents] did-fail-load: ${errorCode} ${errorDescription} on ${validatedURL}\n`);
+  });
+  mainWindow.webContents.on('console-message', (e, level, message, line, sourceId) => {
+    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[renderer-console] [lvl ${level}] ${message} (${sourceId}:${line})\n`);
+  });
+  mainWindow.on('close', (e) => {
+    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[window] close event\n`);
+  });
+
   // Đảm bảo đưa cửa sổ lên phía trước khi sẵn sàng
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -206,6 +223,7 @@ function createWindow() {
   mainWindow.loadURL('app://local/index.html');
 
   mainWindow.on('closed', () => {
+    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[event] mainWindow closed\n');
     mainWindow = null;
   });
 }
@@ -238,9 +256,12 @@ let bridge = null;
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
+  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[single-instance] lock failed, quitting\n');
   app.quit();
 } else {
+  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[single-instance] lock acquired\n');
   app.on('second-instance', () => {
+    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[single-instance] second-instance received\n');
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
@@ -250,29 +271,41 @@ if (!gotSingleInstanceLock) {
 }
 
 app.whenReady().then(async () => {
+  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] started\n');
   session.defaultSession.setCodeCachePath(path.join(app.getPath('userData'), 'Code Cache'));
+  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] code cache set\n');
   registerAppProtocol();
-  // Set application menu before creating BrowserWindow so initial viewport dimensions are accurate
+  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] protocol registered\n');
   Menu.setApplicationMenu(buildAppMenu());
+  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] menu set\n');
   createWindow();
+  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] window created\n');
 
   // Khởi động HTTP Bridge cho MCP Server / Agent
   bridge = new GeoGebraBridge(() => mainWindow);
   try {
     await bridge.start();
+    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] bridge started\n');
   } catch (err) {
+    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[whenReady] bridge start error: ${err.message}\n`);
     console.warn('[GeoGebraBridge] Không thể khởi động bridge server:', err.message);
   }
 });
 
 app.on('window-all-closed', () => {
+  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[app] window-all-closed\n');
   if (bridge) bridge.stop();
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
+app.on('before-quit', () => {
+  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[app] before-quit\n');
+});
+
 app.on('will-quit', () => {
+  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[app] will-quit\n');
   if (bridge) bridge.stop();
 });
 

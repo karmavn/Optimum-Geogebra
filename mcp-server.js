@@ -31,18 +31,31 @@ async function ensureAppRunning(timeoutMs = 25000) {
 
   if (!isLaunching) {
     isLaunching = true;
-    // Khởi chạy ứng dụng GeoGebra Electron nếu chưa bật
-    const runScript = path.join(APP_DIR, 'run-electron.js');
     try {
-      const env = { ...process.env };
-      delete env.ELECTRON_RUN_AS_NODE;
-      const child = spawn(process.execPath, [runScript], {
-        cwd: APP_DIR,
-        env,
-        detached: true,
-        stdio: 'ignore'
-      });
-      child.unref();
+      if (process.platform === 'win32') {
+        const batPath = path.join(APP_DIR, 'start-geogebra.bat');
+        const psCmd = `
+          $action = New-ScheduledTaskAction -Execute "${batPath.replace(/\\/g, '\\\\')}"
+          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+          Register-ScheduledTask -TaskName "LaunchGeoGebraOnDesktop" -Action $action -Settings $settings -Force | Out-Null
+          Start-ScheduledTask -TaskName "LaunchGeoGebraOnDesktop"
+        `.replace(/\r?\n/g, ' ');
+        spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psCmd], {
+          detached: true,
+          stdio: 'ignore'
+        }).unref();
+      } else {
+        const runScript = path.join(APP_DIR, 'run-electron.js');
+        const env = { ...process.env };
+        delete env.ELECTRON_RUN_AS_NODE;
+        const child = spawn(process.execPath, [runScript], {
+          cwd: APP_DIR,
+          env,
+          detached: true,
+          stdio: 'ignore'
+        });
+        child.unref();
+      }
     } catch (err) {
       isLaunching = false;
       throw new Error(`Không thể khởi chạy ứng dụng GeoGebra: ${err.message}`);
