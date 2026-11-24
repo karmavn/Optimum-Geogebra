@@ -263,6 +263,18 @@ class GeoGebraBridge {
     const win = this.getMainWindow();
     if (!win || win.isDestroyed()) return null;
 
+    try {
+      await this.runInRenderer(`
+        (() => {
+          const popup = document.querySelector('.quick-rename-popup');
+          if (popup) {
+            popup.style.display = 'none';
+            popup.classList.remove('is-open');
+          }
+        })()
+      `);
+    } catch (_) {}
+
     // Chụp trực tiếp canvas/viewport từ Chromium GPU surface (Native C++ GPU capture, < 20ms)
     // Tránh độ trễ lớn khi GWT biên dịch lại 3D canvas sang PNG trong JavaScript
     const nativeImage = await win.webContents.capturePage();

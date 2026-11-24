@@ -268,29 +268,29 @@ if (!gotSingleInstanceLock) {
       mainWindow.focus();
     }
   });
+
+  app.whenReady().then(async () => {
+    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] started\n');
+    session.defaultSession.setCodeCachePath(path.join(app.getPath('userData'), 'Code Cache'));
+    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] code cache set\n');
+    registerAppProtocol();
+    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] protocol registered\n');
+    Menu.setApplicationMenu(buildAppMenu());
+    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] menu set\n');
+    createWindow();
+    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] window created\n');
+
+    // Khởi động HTTP Bridge cho MCP Server / Agent
+    bridge = new GeoGebraBridge(() => mainWindow);
+    try {
+      await bridge.start();
+      fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] bridge started\n');
+    } catch (err) {
+      fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[whenReady] bridge start error: ${err.message}\n`);
+      console.warn('[GeoGebraBridge] Không thể khởi động bridge server:', err.message);
+    }
+  });
 }
-
-app.whenReady().then(async () => {
-  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] started\n');
-  session.defaultSession.setCodeCachePath(path.join(app.getPath('userData'), 'Code Cache'));
-  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] code cache set\n');
-  registerAppProtocol();
-  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] protocol registered\n');
-  Menu.setApplicationMenu(buildAppMenu());
-  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] menu set\n');
-  createWindow();
-  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] window created\n');
-
-  // Khởi động HTTP Bridge cho MCP Server / Agent
-  bridge = new GeoGebraBridge(() => mainWindow);
-  try {
-    await bridge.start();
-    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] bridge started\n');
-  } catch (err) {
-    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[whenReady] bridge start error: ${err.message}\n`);
-    console.warn('[GeoGebraBridge] Không thể khởi động bridge server:', err.message);
-  }
-});
 
 app.on('window-all-closed', () => {
   fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[app] window-all-closed\n');

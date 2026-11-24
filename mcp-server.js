@@ -7,7 +7,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { z } = require('zod');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 
 const PORT = parseInt(process.env.GEOGEBRA_MCP_PORT, 10) || 3999;
 const BRIDGE_URL = `http://127.0.0.1:${PORT}`;
@@ -15,9 +15,9 @@ const APP_DIR = path.resolve(__dirname);
 
 let isLaunching = false;
 
-async function isBridgeReady() {
+async function isBridgeReady(timeout = 2500) {
   try {
-    const res = await fetch(`${BRIDGE_URL}/status`, { signal: AbortSignal.timeout(800) });
+    const res = await fetch(`${BRIDGE_URL}/status`, { signal: AbortSignal.timeout(timeout) });
     if (!res.ok) return false;
     const data = await res.json();
     return !!(data.running && data.appletReady);
@@ -27,23 +27,22 @@ async function isBridgeReady() {
 }
 
 async function ensureAppRunning(timeoutMs = 25000) {
-  if (await isBridgeReady()) return true;
+  if (await isBridgeReady(1200)) return true;
 
   if (!isLaunching) {
     isLaunching = true;
     try {
       if (process.platform === 'win32') {
-        const batPath = path.join(APP_DIR, 'start-geogebra.bat');
-        const psCmd = `
-          $action = New-ScheduledTaskAction -Execute "${batPath.replace(/\\/g, '\\\\')}"
-          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-          Register-ScheduledTask -TaskName "LaunchGeoGebraOnDesktop" -Action $action -Settings $settings -Force | Out-Null
-          Start-ScheduledTask -TaskName "LaunchGeoGebraOnDesktop"
-        `.replace(/\r?\n/g, ' ');
-        spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psCmd], {
-          detached: true,
-          stdio: 'ignore'
-        }).unref();
+        execFile('schtasks', ['/run', '/tn', 'LaunchGeoGebraOnDesktop'], (err) => {
+          if (err) {
+            const batPath = path.join(APP_DIR, 'start-geogebra.bat');
+            const psScript = `$action = New-ScheduledTaskAction -Execute '${batPath.replace(/'/g, "''")}'; $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; Register-ScheduledTask -TaskName 'LaunchGeoGebraOnDesktop' -Action $action -Settings $settings -Force | Out-Null; Start-ScheduledTask -TaskName 'LaunchGeoGebraOnDesktop';`;
+            spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psScript], {
+              detached: true,
+              stdio: 'ignore'
+            }).unref();
+          }
+        });
       } else {
         const runScript = path.join(APP_DIR, 'run-electron.js');
         const env = { ...process.env };
@@ -65,7 +64,7 @@ async function ensureAppRunning(timeoutMs = 25000) {
   const startTime = Date.now();
   while (Date.now() - startTime < timeoutMs) {
     await new Promise(r => setTimeout(r, 600));
-    if (await isBridgeReady()) {
+    if (await isBridgeReady(1000)) {
       isLaunching = false;
       return true;
     }
