@@ -6,73 +6,183 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { buildPyramidCommands } = require('./pyramid-builder');
+const {
+  generateToken,
+  writeBridgeToken,
+  removeBridgeToken,
+  verifyBearerToken
+} = require('./bridge-auth');
+const { bringWindowToFront } = require('./window-utils');
 
 const DEFAULT_PORT = 3999;
 const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB limit to prevent DoS/memory issues
 
+function createHttpError(statusCode, message) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
+
 class GeoGebraBridge {
-  constructor(getMainWindow) {
+  constructor(getMainWindow, options = {}) {
     this.getMainWindow = getMainWindow;
-    this.port = parseInt(process.env.GEOGEBRA_MCP_PORT, 10) || DEFAULT_PORT;
+    this.port = options.port !== undefined
+      ? options.port
+      : (parseInt(process.env.GEOGEBRA_MCP_PORT, 10) || DEFAULT_PORT);
+    this.boundPort = null;
+    this.maxBodySize = options.maxBodySize || MAX_BODY_SIZE;
+    this.token = options.token || process.env.GEOGEBRA_MCP_TOKEN || generateToken();
+    this.persistToken = options.persistToken !== false;
+    this.appRoot = path.resolve(options.appRoot || path.join(__dirname, '..'));
     this.server = null;
+  }
+
+  isValidHostHeader(hostHeader, boundPort) {
+    if (typeof hostHeader !== 'string' || !hostHeader) return false;
+    const host = hostHeader.trim().toLowerCase();
+    if (host === `127.0.0.1:${boundPort}` || host === `localhost:${boundPort}`) {
+      return true;
+    }
+    return boundPort === 80 && (host === '127.0.0.1' || host === 'localhost');
+  }
+
+  isValidOrigin(originHeader) {
+    if (originHeader === 'app://local') return true;
+    try {
+      const parsed = new URL(originHeader);
+      return parsed.protocol === 'http:' &&
+        (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  requireJsonContentType(req) {
+    const raw = (req.headers['content-type'] || '').toLowerCase().split(';')[0].trim();
+    if (raw !== 'application/json') {
+      throw createHttpError(415, 'Unsupported Media Type: Content-Type must be application/json');
+    }
+  }
+
+  validateGgbPath(rawPath, { checkAppRoot = false } = {}) {
+    if (!rawPath || typeof rawPath !== 'string' || !rawPath.trim()) {
+      throw createHttpError(400, 'filePath is required and must be a non-empty string');
+    }
+
+    const trimmed = rawPath.trim();
+    if (/\0/.test(trimmed) || /^\\\\|^\/\//.test(trimmed)) {
+      throw createHttpError(400, 'Invalid filePath: UNC/network paths and null bytes are not allowed');
+    }
+
+    let resolvedPath = path.resolve(trimmed);
+    if (resolvedPath.startsWith('\\\\')) {
+      throw createHttpError(400, 'Invalid filePath: network UNC paths are not allowed');
+    }
+
+    if (!resolvedPath.toLowerCase().endsWith('.ggb')) {
+      resolvedPath += '.ggb';
+    }
+
+    if (checkAppRoot) {
+      const normResolved = resolvedPath.toLowerCase();
+      const normAppRoot = (this.appRoot + path.sep).toLowerCase();
+      if (normResolved === this.appRoot.toLowerCase() || normResolved.startsWith(normAppRoot)) {
+        throw createHttpError(403, 'Access forbidden: cannot write inside application installation directory');
+      }
+    }
+
+    const allowedDir = process.env.GEOGEBRA_ALLOWED_DIR;
+    if (allowedDir) {
+      const resolvedAllowed = path.resolve(allowedDir);
+      const normResolved = resolvedPath.toLowerCase();
+      const normAllowed = (resolvedAllowed + path.sep).toLowerCase();
+      if (normResolved !== resolvedAllowed.toLowerCase() && !normResolved.startsWith(normAllowed)) {
+        throw createHttpError(403, 'Access forbidden: filePath outside GEOGEBRA_ALLOWED_DIR');
+      }
+    }
+
+    return resolvedPath;
   }
 
   start() {
     return new Promise((resolve, reject) => {
+      if (this.persistToken && this.port !== 0) {
+        writeBridgeToken(this.port, this.token);
+      }
+
       this.server = http.createServer(async (req, res) => {
-        // Host validation (Bảo vệ chống tấn công DNS Rebinding)
-        const host = req.headers.host || '';
-        if (!host.startsWith('127.0.0.1') && !host.startsWith('localhost')) {
+        const boundPort = this.boundPort || this.port;
+
+        // 1. Strict Host validation (protect against DNS rebinding)
+        if (!this.isValidHostHeader(req.headers.host, boundPort)) {
           res.writeHead(403, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Access forbidden: invalid host' }));
           return;
         }
 
-        // Kiểm tra và bảo vệ CORS (Chỉ cho phép nguồn cục bộ, chặn hoàn toàn CSRF từ các website bên ngoài)
+        // 2. Strict Origin validation on ALL HTTP methods (protect against browser CSRF)
         const origin = req.headers.origin;
-        const isLocalOrigin = origin && (
-          origin.startsWith('http://127.0.0.1') ||
-          origin.startsWith('http://localhost') ||
-          origin.startsWith('app://')
-        );
-
-        if (isLocalOrigin) {
+        if (origin !== undefined) {
+          if (!this.isValidOrigin(origin)) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Access forbidden: untrusted origin' }));
+            return;
+          }
           res.setHeader('Access-Control-Allow-Origin', origin);
+          res.setHeader('Vary', 'Origin');
           res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
         }
 
         if (req.method === 'OPTIONS') {
-          res.writeHead(isLocalOrigin || !origin ? 204 : 403);
+          res.writeHead(204);
           res.end();
           return;
         }
 
-        const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-        const pathname = url.pathname;
+        // 3. Per-session Bearer token authentication
+        if (!verifyBearerToken(req.headers.authorization, this.token)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized: invalid or missing bridge token' }));
+          return;
+        }
 
+        let pathname = '';
         try {
+          let url;
+          try {
+            url = new URL(req.url, `http://127.0.0.1:${boundPort}`);
+          } catch (_) {
+            throw createHttpError(400, 'Malformed request URL');
+          }
+          pathname = url.pathname;
+
           if (req.method === 'GET' && (pathname === '/status' || pathname === '/health')) {
             await this.handleStatus(res);
           } else if (req.method === 'POST' && pathname === '/eval') {
+            this.requireJsonContentType(req);
             const body = await this.parseJsonBody(req);
             await this.handleEval(body, res);
           } else if (req.method === 'POST' && pathname === '/pyramid') {
+            this.requireJsonContentType(req);
             const body = await this.parseJsonBody(req);
             await this.handlePyramid(body, res);
           } else if (req.method === 'POST' && pathname === '/reset') {
             await this.handleReset(res);
           } else if (req.method === 'POST' && pathname === '/perspective') {
+            this.requireJsonContentType(req);
             const body = await this.parseJsonBody(req);
             await this.handlePerspective(body, res);
           } else if (req.method === 'GET' && pathname === '/screenshot') {
             await this.handleScreenshot(res);
           } else if (req.method === 'GET' && pathname === '/objects') {
-            await this.handleGetObjects(req, res);
+            await this.handleGetObjects(url, res);
           } else if (req.method === 'POST' && pathname === '/save') {
+            this.requireJsonContentType(req);
             const body = await this.parseJsonBody(req);
             await this.handleSave(body, res);
           } else if (req.method === 'POST' && pathname === '/load') {
+            this.requireJsonContentType(req);
             const body = await this.parseJsonBody(req);
             await this.handleLoad(body, res);
           } else if (req.method === 'POST' && pathname === '/focus') {
@@ -82,10 +192,14 @@ class GeoGebraBridge {
             res.end(JSON.stringify({ error: 'Not found', path: pathname }));
           }
         } catch (err) {
-          console.error('Bridge error on', pathname, err);
+          console.error('Bridge error on', pathname || req.url, err);
           if (!res.headersSent && !res.destroyed) {
             const statusCode = err.statusCode || (err.message && err.message.includes('too large') ? 413 : 500);
-            res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+            const headers = { 'Content-Type': 'application/json' };
+            if (statusCode === 413) {
+              headers['Connection'] = 'close';
+            }
+            res.writeHead(statusCode, headers);
             res.end(JSON.stringify({ error: err.message || String(err) }));
           }
         }
@@ -99,60 +213,74 @@ class GeoGebraBridge {
       });
 
       this.server.listen(this.port, '127.0.0.1', () => {
-        console.log(`[GeoGebraBridge] Server listening on http://127.0.0.1:${this.port}`);
-        resolve(this.port);
+        const addr = this.server.address();
+        this.boundPort = addr && typeof addr === 'object' ? addr.port : this.port;
+        if (this.persistToken && this.port === 0) {
+          writeBridgeToken(this.boundPort, this.token);
+        }
+        console.log(`[GeoGebraBridge] Server listening on http://127.0.0.1:${this.boundPort}`);
+        resolve(this.boundPort);
       });
     });
   }
 
   parseJsonBody(req) {
     return new Promise((resolve, reject) => {
-      let data = '';
+      const chunks = [];
       let receivedBytes = 0;
+      let settled = false;
 
-      req.on('data', chunk => {
-        receivedBytes += chunk.length;
-        if (receivedBytes > MAX_BODY_SIZE) {
-          req.destroy();
-          const err = new Error(`Request body too large (max ${MAX_BODY_SIZE / (1024 * 1024)}MB)`);
-          err.statusCode = 413;
-          reject(err);
+      req.on('data', (chunk) => {
+        if (settled) return;
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        receivedBytes += buf.length;
+        if (receivedBytes > this.maxBodySize) {
+          settled = true;
+          if (typeof req.pause === 'function') req.pause();
+          reject(createHttpError(413, `Request body too large (max ${this.maxBodySize} bytes)`));
           return;
         }
-        data += chunk;
+        chunks.push(buf);
       });
 
       req.on('end', () => {
+        if (settled) return;
+        settled = true;
         try {
-          resolve(data ? JSON.parse(data) : {});
-        } catch (err) {
-          const parseErr = new Error('Invalid JSON in request body');
-          parseErr.statusCode = 400;
-          reject(parseErr);
+          const raw = Buffer.concat(chunks).toString('utf8').trim();
+          if (!raw) {
+            resolve({});
+            return;
+          }
+          const parsed = JSON.parse(raw);
+          if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            reject(createHttpError(400, 'Request body must be a JSON object'));
+            return;
+          }
+          resolve(parsed);
+        } catch (_) {
+          reject(createHttpError(400, 'Invalid JSON in request body'));
         }
       });
 
-      req.on('error', reject);
+      req.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      });
     });
   }
 
   async runInRenderer(jsCode) {
     const win = this.getMainWindow();
     if (!win || win.isDestroyed()) {
-      throw new Error('GeoGebra window is not available');
+      throw createHttpError(503, 'GeoGebra window is not available');
     }
     return await win.webContents.executeJavaScript(jsCode);
   }
 
   bringToFront() {
-    const win = this.getMainWindow();
-    if (win && !win.isDestroyed()) {
-      if (win.isMinimized()) win.restore();
-      win.show();
-      win.setAlwaysOnTop(true);
-      win.focus();
-      win.setAlwaysOnTop(false);
-    }
+    bringWindowToFront(this.getMainWindow());
   }
 
   async handleStatus(res) {
@@ -192,8 +320,12 @@ class GeoGebraBridge {
     this.bringToFront();
     const commands = body.commands || [];
     const cmdsArray = Array.isArray(commands) ? commands : [commands];
-    const js = `window.ggbBridge.evalCommands(${JSON.stringify(cmdsArray)})`;
-    const result = await this.runInRenderer(js);
+    const result = await this.runInRenderer(`
+      (() => {
+        if (!window.ggbBridge) throw new Error('GeoGebra bridge is not ready');
+        return window.ggbBridge.evalCommands(${JSON.stringify(cmdsArray)});
+      })()
+    `);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));
   }
@@ -204,11 +336,11 @@ class GeoGebraBridge {
     // Tạo tập lệnh từ pyramid-builder
     const pyramidData = buildPyramidCommands(body);
 
-    // Tối ưu hóa hiệu năng: Chạy nguyên khối trong một lần gọi renderer duy nhất (Atomic Batch)
-    // kết hợp đồng bộ hóa 2 frame rAF thay vì 4 lần IPC tuần tự và 400ms sleep
+    // Chạy nguyên khối trong một lần gọi renderer duy nhất (Atomic Batch) + đồng bộ rAF
     const evalRes = await this.runInRenderer(`
       (async () => {
-        if (window.ggbBridge && typeof window.ggbBridge.renderPyramidBatch === 'function') {
+        if (!window.ggbBridge) throw new Error('GeoGebra bridge is not ready');
+        if (typeof window.ggbBridge.renderPyramidBatch === 'function') {
           return await window.ggbBridge.renderPyramidBatch({
             commands: ${JSON.stringify(pyramidData.commands)},
             perspective: "T",
@@ -222,7 +354,6 @@ class GeoGebraBridge {
       })()
     `);
 
-    // Lấy ảnh chụp màn hình ngay khi frame vừa được render
     let screenshotBase64 = null;
     try {
       screenshotBase64 = await this.captureScreenshot();
@@ -247,14 +378,24 @@ class GeoGebraBridge {
   }
 
   async handleReset(res) {
-    const result = await this.runInRenderer(`window.ggbBridge.reset()`);
+    const result = await this.runInRenderer(`
+      (() => {
+        if (!window.ggbBridge) throw new Error('GeoGebra bridge is not ready');
+        return window.ggbBridge.reset();
+      })()
+    `);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));
   }
 
   async handlePerspective(body, res) {
     const p = body.perspective || 'T';
-    const result = await this.runInRenderer(`window.ggbBridge.setPerspective(${JSON.stringify(p)})`);
+    const result = await this.runInRenderer(`
+      (() => {
+        if (!window.ggbBridge) throw new Error('GeoGebra bridge is not ready');
+        return window.ggbBridge.setPerspective(${JSON.stringify(p)});
+      })()
+    `);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));
   }
@@ -265,19 +406,37 @@ class GeoGebraBridge {
 
     try {
       await this.runInRenderer(`
-        (() => {
-          const popup = document.querySelector('.quick-rename-popup');
-          if (popup) {
-            popup.style.display = 'none';
-            popup.classList.remove('is-open');
+        (async () => {
+          let wasOpen = false;
+          if (typeof window.dismissQuickRenamePopup === 'function') {
+            wasOpen = Boolean(window.dismissQuickRenamePopup());
+          } else {
+            const popup = document.querySelector('.quick-rename-popup');
+            if (popup && popup.style.display !== 'none') {
+              wasOpen = true;
+              popup.style.display = 'none';
+              popup.classList.remove('is-open');
+            }
           }
+          if (wasOpen) {
+            await new Promise((resolve) => {
+              const timer = setTimeout(resolve, 50);
+              requestAnimationFrame(() => {
+                clearTimeout(timer);
+                resolve();
+              });
+            });
+          }
+          return wasOpen;
         })()
       `);
     } catch (_) {}
 
-    // Chụp trực tiếp canvas/viewport từ Chromium GPU surface (Native C++ GPU capture, < 20ms)
-    // Tránh độ trễ lớn khi GWT biên dịch lại 3D canvas sang PNG trong JavaScript
-    const nativeImage = await win.webContents.capturePage();
+    const currentWin = this.getMainWindow();
+    if (!currentWin || currentWin.isDestroyed()) return null;
+
+    // Chụp trực tiếp canvas/viewport từ Chromium GPU surface (Native C++ GPU capture)
+    const nativeImage = await currentWin.webContents.capturePage();
     const buffer = nativeImage.toPNG();
     return `data:image/png;base64,${buffer.toString('base64')}`;
   }
@@ -288,34 +447,29 @@ class GeoGebraBridge {
     res.end(JSON.stringify({ success: !!imgData, image: imgData }));
   }
 
-  async handleGetObjects(req, res) {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  async handleGetObjects(url, res) {
     const filterType = url.searchParams.get('type') || null;
-    const limit = parseInt(url.searchParams.get('limit'), 10) || null;
+    const limitRaw = url.searchParams.get('limit');
+    const parsedLimit = limitRaw !== null && limitRaw !== '' ? Number(limitRaw) : null;
 
-    let objects = await this.runInRenderer(`window.ggbBridge.getObjects()`);
+    let objects = await this.runInRenderer(`
+      (() => {
+        if (!window.ggbBridge) throw new Error('GeoGebra bridge is not ready');
+        return window.ggbBridge.getObjects();
+      })()
+    `);
     if (filterType) {
       objects = objects.filter(o => o.type && o.type.toLowerCase() === filterType.toLowerCase());
     }
-    if (limit && limit > 0) {
-      objects = objects.slice(0, limit);
+    if (Number.isInteger(parsedLimit) && parsedLimit >= 0) {
+      objects = objects.slice(0, parsedLimit);
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, count: objects.length, objects }));
   }
 
   async handleSave(body, res) {
-    const rawPath = body.filePath;
-    if (!rawPath || typeof rawPath !== 'string' || !rawPath.trim()) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'filePath is required and must be a non-empty string' }));
-      return;
-    }
-
-    let resolvedPath = path.resolve(rawPath.trim());
-    if (!resolvedPath.toLowerCase().endsWith('.ggb')) {
-      resolvedPath += '.ggb';
-    }
+    const resolvedPath = this.validateGgbPath(body.filePath, { checkAppRoot: true });
 
     const base64Data = await this.runInRenderer(`
       new Promise((resolve, reject) => {
@@ -356,21 +510,23 @@ class GeoGebraBridge {
   }
 
   async handleLoad(body, res) {
-    const rawPath = body.filePath;
-    if (!rawPath || typeof rawPath !== 'string' || !rawPath.trim()) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'filePath is required and must be a non-empty string' }));
-      return;
+    const resolvedPath = this.validateGgbPath(body.filePath, { checkAppRoot: false });
+
+    let stat;
+    try {
+      stat = await fs.promises.stat(resolvedPath);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') {
+        throw createHttpError(400, 'File not found: ' + resolvedPath);
+      }
+      throw err;
     }
 
-    let resolvedPath = path.resolve(rawPath.trim());
-    if (!resolvedPath.toLowerCase().endsWith('.ggb')) {
-      resolvedPath += '.ggb';
+    if (!stat.isFile()) {
+      throw createHttpError(400, 'Path is not a file: ' + resolvedPath);
     }
-    if (!fs.existsSync(resolvedPath)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'File not found: ' + resolvedPath }));
-      return;
+    if (stat.size > this.maxBodySize) {
+      throw createHttpError(413, `File too large (max ${this.maxBodySize} bytes)`);
     }
 
     const fileBuffer = await fs.promises.readFile(resolvedPath);
@@ -395,8 +551,14 @@ class GeoGebraBridge {
   }
 
   stop() {
+    if (this.persistToken && (this.boundPort || this.port)) {
+      removeBridgeToken(this.boundPort || this.port, this.token);
+    }
     if (this.server) {
       this.server.close();
+      if (typeof this.server.closeAllConnections === 'function') {
+        this.server.closeAllConnections();
+      }
       this.server = null;
     }
   }
