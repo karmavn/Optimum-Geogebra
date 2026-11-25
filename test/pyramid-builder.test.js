@@ -33,8 +33,17 @@ describe('Pyramid Builder Tests', () => {
     assert.ok(res.baseArea > 0);
     assert.equal(res.foot.label, 'O');
     assert.equal(res.points.S[2], 4);
-    // Height line should be dashed (style 1)
     assert.ok(res.commands.some(cmd => cmd.includes('SetLineStyle') && cmd.includes('1')));
+  });
+
+  it('should default omitted base_shape for type chop_deu to tam_giac_deu', () => {
+    const res = buildPyramidCommands({
+      type: 'chop_deu',
+      dimensions: { a: 6, h: 4 }
+    });
+
+    assert.equal(res.baseArea, roundNum((36 * Math.sqrt(3)) / 4));
+    assert.ok(res.explanation.includes('Chóp tam giác đều'));
   });
 
   it('should build a quadrangular pyramid with square base (chóp tứ giác đều)', () => {
@@ -50,7 +59,6 @@ describe('Pyramid Builder Tests', () => {
     assert.deepEqual(res.foot.coords, [2, 2, 0]);
     assert.deepEqual(res.points.S, [2, 2, 6]);
     assert.ok(res.commands.includes('M = Midpoint(S, C)'));
-    // Diagonals AC, BD should be drawn
     assert.ok(res.commands.some(cmd => cmd.includes('cheo_AC')));
     assert.ok(res.commands.some(cmd => cmd.includes('cheo_BD')));
   });
@@ -72,7 +80,7 @@ describe('Pyramid Builder Tests', () => {
     const res = buildPyramidCommands({
       type: 'tam_giac',
       base_shape: 'tam_giac_can',
-      dimensions: { a: 6, b: 2, h: 4 } // b < a/2 would normally give NaN
+      dimensions: { a: 6, b: 2, h: 4 }
     });
 
     assert.ok(!isNaN(res.points.A[1]));
@@ -119,7 +127,7 @@ describe('Pyramid Builder Tests', () => {
     assert.equal(res.baseArea, 6);
   });
 
-  it('should assign default foot label G for SH_trong_tam', () => {
+  it('should assign default foot label G for SH_trong_tam on triangle', () => {
     const res = buildPyramidCommands({
       type: 'tam_giac',
       base_shape: 'tam_giac_deu',
@@ -131,7 +139,66 @@ describe('Pyramid Builder Tests', () => {
     assert.ok(res.commands.some(cmd => cmd.includes('duong_cao_SG')));
   });
 
-  it('should support scalene triangle base (tam_giac_thuong)', () => {
+  it('should compute true 4-vertex centroid for SH_trong_tam on quadrilateral', () => {
+    const res = buildPyramidCommands({
+      type: 'tu_giac',
+      base_shape: 'hinh_chu_nhat',
+      height_type: 'SH_trong_tam',
+      dimensions: { a: 4, b: 6, h: 5 }
+    });
+
+    assert.deepEqual(res.foot.coords, [2, 3, 0]);
+    assert.deepEqual(res.points.S, [2, 3, 5]);
+  });
+
+  it('should compute exact AC/BD diagonal intersection for hinh_thang_vuong with SO_chop_deu', () => {
+    const res = buildPyramidCommands({
+      type: 'tu_giac',
+      base_shape: 'hinh_thang_vuong',
+      height_type: 'SO_chop_deu',
+      dimensions: { a: 6, b: 3, h: 5 }
+    });
+
+    // A=(0,0), B=(6,0), C=(6,3), D=(0,6) -> AC & BD intersect at (2a/3, 2b/3) = (4, 2)
+    assert.deepEqual(res.foot.coords, [4, 2, 0]);
+    assert.deepEqual(res.points.S, [4, 2, 5]);
+    assert.ok(!res.explanation.includes('Chóp tứ giác đều'));
+  });
+
+  it('should honor custom labels.height_foot in chop_deu / SO_chop_deu', () => {
+    const res = buildPyramidCommands({
+      type: 'chop_deu',
+      base_shape: 'hinh_vuong',
+      labels: { height_foot: 'I' },
+      dimensions: { a: 4, h: 5 }
+    });
+
+    assert.equal(res.foot.label, 'I');
+    assert.ok(res.commands.some(cmd => cmd.startsWith('I = (2, 2, 0)')));
+  });
+
+  it('should support primed labels without invalid mid-identifier quotes and avoid foot collisions', () => {
+    const res = buildPyramidCommands({
+      type: 'tam_giac',
+      base_shape: 'tam_giac_vuong_A',
+      height_type: 'SH_trung_diem_AB',
+      labels: { apex: "S'", base: ["A'", "B'", "C'"], height_foot: "H'" },
+      dimensions: { a: 4, b: 3, h: 5 }
+    });
+
+    assert.ok(res.commands.some(cmd => cmd.startsWith("S' = ")));
+    assert.ok(res.commands.some(cmd => cmd.includes("duong_cao_SpHp = Segment(S', H')")));
+
+    const resCollision = buildPyramidCommands({
+      type: 'chop_deu',
+      base_shape: 'tam_giac_deu',
+      labels: { apex: 'S', base: ['O', 'B', 'C'] },
+      dimensions: { a: 6, h: 4 }
+    });
+    assert.equal(resCollision.foot.label, 'O_1');
+  });
+
+  it('should support scalene triangle base and reject impossible triangle inequality', () => {
     const res = buildPyramidCommands({
       type: 'tam_giac',
       base_shape: 'tam_giac_thuong',
@@ -141,5 +208,57 @@ describe('Pyramid Builder Tests', () => {
     assert.ok(res.baseArea > 0);
     assert.equal(res.points.B[0], 6);
     assert.ok(res.explanation.includes('tam giác thường'));
+
+    assert.throws(
+      () => buildPyramidCommands({
+        type: 'tam_giac',
+        base_shape: 'tam_giac_thuong',
+        dimensions: { a: 1, b: 1, c: 10, h: 5 }
+      }),
+      (err) => err.statusCode === 400
+    );
+  });
+
+  it('should reject command injection, invalid labels/colors, negative dims, and mismatched shapes', () => {
+    const invalidInputs = [
+      { labels: { apex: 'S"); Execute({}); //' } },
+      { color: 'red"); Execute({}); //' },
+      { labels: { base: ['A', 'B'] } },
+      { labels: { base: ['A', 'A', 'C'] } },
+      { labels: { apex: 'A', base: ['A', 'B', 'C'] } },
+      { dimensions: { a: -4, b: 3, h: 5 } },
+      { dimensions: { a: 4, b: 3, h: 0 } },
+      { dimensions: { a: Number.NaN } },
+      { type: 'custom', base_shape: 'tam_giac_vuong_A' },
+      { type: 'chop_deu', base_shape: 'tam_giac_vuong_A' },
+      { type: 'tam_giac', base_shape: 'hinh_vuong' },
+      { type: 'tam_giac', base_shape: 'tam_giac_deu', height_type: 'SH_trung_diem_AD' },
+      { opacity: 1.5 },
+      { extra_points: [{ name: 'M', coords: [1, 2] }] }
+    ];
+
+    for (const bad of invalidInputs) {
+      assert.throws(
+        () => buildPyramidCommands(bad),
+        (err) => err.statusCode === 400,
+        `Expected 400 validation error for ${JSON.stringify(bad)}`
+      );
+    }
+  });
+
+  it('should respect explicit opacity 0, omit SetPerspective("T"), and round output coordinates', () => {
+    const res = buildPyramidCommands({
+      type: 'tam_giac',
+      base_shape: 'tam_giac_deu',
+      dimensions: { a: 5, h: 4 },
+      opacity: 0,
+      planes: [{ points: ['A', 'B', 'S'], opacity: 0 }]
+    });
+
+    assert.ok(res.commands.includes('SetFilling(chop, 0)'));
+    assert.ok(res.commands.includes('SetFilling(mat_phang_1, 0)'));
+    assert.ok(!res.commands.includes('SetPerspective("T")'));
+    // C[1] for equilateral side 5 is 5 * sqrt(3) / 2 = 4.330127... -> rounded to 4.33
+    assert.equal(res.points.C[1], 4.33);
   });
 });

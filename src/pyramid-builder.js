@@ -4,6 +4,44 @@
  * Tailored for Vietnamese High School Geometry (Toán 11, 12, ĐGNL, THPT QG)
  */
 
+const VALID_LABEL_RE = /^[A-Za-z][A-Za-z0-9_]*'*$/;
+const VALID_COLOR_RE = /^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|[a-zA-Z]{3,20})$/;
+
+const TRIANGLE_SHAPES = new Set([
+  'tam_giac_vuong_A',
+  'tam_giac_vuong_B',
+  'tam_giac_vuong_C',
+  'tam_giac_deu',
+  'tam_giac_can',
+  'tam_giac_thuong'
+]);
+
+const QUAD_SHAPES = new Set([
+  'hinh_vuong',
+  'hinh_chu_nhat',
+  'hinh_thoi',
+  'hinh_binh_hanh',
+  'hinh_thang_vuong'
+]);
+
+const VALID_TYPES = new Set(['tam_giac', 'tu_giac', 'chop_deu']);
+
+const VALID_HEIGHT_TYPES = new Set([
+  'SA_vuong_goc_day', 'edge_A',
+  'SB_vuong_goc_day', 'edge_B',
+  'SC_vuong_goc_day', 'edge_C',
+  'chop_deu', 'SO_chop_deu',
+  'SH_trung_diem_AB',
+  'SH_trung_diem_AD',
+  'SH_trong_tam'
+]);
+
+function createValidationError(message) {
+  const err = new Error(message);
+  err.statusCode = 400;
+  return err;
+}
+
 function roundNum(n) {
   return Math.round(n * 1000) / 1000;
 }
@@ -12,56 +50,177 @@ function ptStr(x, y, z) {
   return `(${roundNum(x)}, ${roundNum(y)}, ${roundNum(z)})`;
 }
 
+function validateLabel(val, fieldName) {
+  if (typeof val !== 'string' || val.length === 0 || val.length > 20 || !VALID_LABEL_RE.test(val)) {
+    throw createValidationError(`Invalid GeoGebra point label for ${fieldName}: ${JSON.stringify(val)}`);
+  }
+  return val;
+}
+
+function validateColor(val, fieldName) {
+  if (typeof val !== 'string' || !VALID_COLOR_RE.test(val)) {
+    throw createValidationError(`Invalid color for ${fieldName}: ${JSON.stringify(val)}`);
+  }
+  return val;
+}
+
+function parsePositiveDim(val, defaultVal, fieldName) {
+  if (val === undefined) return defaultVal;
+  const num = Number(val);
+  if (!Number.isFinite(num) || num <= 0) {
+    throw createValidationError(`Dimension ${fieldName} must be a positive finite number`);
+  }
+  return num;
+}
+
+function validateOpacity(val, defaultVal, fieldName) {
+  if (val === undefined) return defaultVal;
+  const num = Number(val);
+  if (!Number.isFinite(num) || num < 0 || num > 1) {
+    throw createValidationError(`Opacity ${fieldName} must be between 0 and 1`);
+  }
+  return num;
+}
+
+function safeGgbIdPart(label) {
+  return label.replace(/'/g, 'p');
+}
+
+function resolveFootLabel(defaultLabel, explicitFootLabel, occupiedSet) {
+  if (explicitFootLabel !== undefined) {
+    const validated = validateLabel(explicitFootLabel, 'labels.height_foot');
+    if (occupiedSet.has(validated)) {
+      throw createValidationError(`labels.height_foot (${validated}) collides with an existing vertex label`);
+    }
+    return validated;
+  }
+  if (!occupiedSet.has(defaultLabel)) return defaultLabel;
+  let idx = 1;
+  while (occupiedSet.has(`${defaultLabel}_${idx}`)) {
+    idx += 1;
+  }
+  return `${defaultLabel}_${idx}`;
+}
+
+function intersect2D(p1, p2, p3, p4) {
+  const x1 = p1[0], y1 = p1[1];
+  const x2 = p2[0], y2 = p2[1];
+  const x3 = p3[0], y3 = p3[1];
+  const x4 = p4[0], y4 = p4[1];
+  const denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+  if (Math.abs(denom) < 1e-9) {
+    return [(x1 + x2) / 2, (y1 + y2) / 2];
+  }
+  const det1 = x1 * y2 - y1 * x2;
+  const det2 = x3 * y4 - y3 * x4;
+  const ix = (det1 * (x3 - x4) - (x1 - x2) * det2) / denom;
+  const iy = (det1 * (y3 - y4) - (y1 - y2) * det2) / denom;
+  return [ix, iy];
+}
+
+function resolveConfiguration(options) {
+  const type = options.type || 'tam_giac';
+  if (!VALID_TYPES.has(type)) {
+    throw createValidationError(`Unsupported pyramid type: ${type}`);
+  }
+
+  let baseShape = options.base_shape;
+  if (!baseShape) {
+    baseShape = type === 'tu_giac' ? 'hinh_vuong' : (type === 'chop_deu' ? 'tam_giac_deu' : 'tam_giac_vuong_A');
+  }
+
+  const isTriShape = TRIANGLE_SHAPES.has(baseShape);
+  const isQuadShape = QUAD_SHAPES.has(baseShape);
+  if (!isTriShape && !isQuadShape) {
+    throw createValidationError(`Unsupported base_shape: ${baseShape}`);
+  }
+  if (type === 'tam_giac' && !isTriShape) {
+    throw createValidationError(`base_shape ${baseShape} is incompatible with type 'tam_giac'`);
+  }
+  if (type === 'tu_giac' && !isQuadShape) {
+    throw createValidationError(`base_shape ${baseShape} is incompatible with type 'tu_giac'`);
+  }
+  if (type === 'chop_deu' && baseShape !== 'tam_giac_deu' && baseShape !== 'hinh_vuong') {
+    throw createValidationError(`Regular pyramid (chop_deu) requires 'tam_giac_deu' or 'hinh_vuong', got ${baseShape}`);
+  }
+
+  const heightType = options.height_type || (type === 'chop_deu' ? 'SO_chop_deu' : 'SA_vuong_goc_day');
+  if (!VALID_HEIGHT_TYPES.has(heightType)) {
+    throw createValidationError(`Unsupported height_type: ${heightType}`);
+  }
+  if (heightType === 'SH_trung_diem_AD' && isTriShape) {
+    throw createValidationError(`height_type 'SH_trung_diem_AD' requires a quadrilateral base`);
+  }
+
+  return { type, baseShape, heightType, isTriShape };
+}
+
 /**
  * Builds GeoGebra commands to draw a 3D pyramid
- * @param {Object} options 
- * @returns {{ commands: string[], explanation: string, points: Object, volumeFormula: string }}
+ * @param {Object} options
+ * @returns {{ commands: string[], explanation: string, points: Object, foot: Object, baseArea: number, height: number, volume: number, volumeFormula: string }}
  */
 function buildPyramidCommands(options = {}) {
+  if (!options || typeof options !== 'object') {
+    throw createValidationError('Pyramid options must be an object');
+  }
+
   const {
-    type = 'tam_giac', // 'tam_giac' | 'tu_giac' | 'chop_deu'
-    base_shape = 'tam_giac_vuong_A',
-    height_type = 'SA_vuong_goc_day',
     dimensions = {},
     labels = {},
     draw_height = true,
     draw_base_diagonals = true,
-    opacity = 0.25,
-    color = '#2563eb', // blue
-    height_color = '#dc2626', // red
+    opacity: rawOpacity,
+    color: rawColor = '#2563eb',
+    height_color: rawHeightColor = '#dc2626',
     extra_points = [],
     planes = [],
     show_axes = false,
     show_grid = false
   } = options;
 
-  const a = Number(dimensions.a) || 4;
-  const b = Number(dimensions.b) || 3;
-  const c = Number(dimensions.c) || 4;
-  const h = Number(dimensions.h) || 5;
+  const { type, baseShape, heightType, isTriShape } = resolveConfiguration(options);
 
-  const apexLabel = labels.apex || 'S';
-  const footLabel = labels.height_foot; // Giữ nguyên để từng loại đường cao chọn ký hiệu mặc định phù hợp (H, O, G)
-  const baseLabels = labels.base || (type === 'tam_giac' ? ['A', 'B', 'C'] : ['A', 'B', 'C', 'D']);
+  const a = parsePositiveDim(dimensions.a, 4, 'a');
+  const b = parsePositiveDim(dimensions.b, 3, 'b');
+  const h = parsePositiveDim(dimensions.h, 5, 'h');
+  const opacity = validateOpacity(rawOpacity, 0.25, 'opacity');
+  const color = validateColor(rawColor, 'color');
+  const heightColor = validateColor(rawHeightColor, 'height_color');
 
-  let pts = {};
+  const apexLabel = validateLabel(labels.apex !== undefined ? labels.apex : 'S', 'labels.apex');
+  const expectedBaseLen = isTriShape ? 3 : 4;
+  const rawBaseLabels = labels.base !== undefined
+    ? labels.base
+    : (isTriShape ? ['A', 'B', 'C'] : ['A', 'B', 'C', 'D']);
+
+  if (!Array.isArray(rawBaseLabels) || rawBaseLabels.length !== expectedBaseLen) {
+    throw createValidationError(`labels.base must have exactly ${expectedBaseLen} labels for ${baseShape}`);
+  }
+  const baseLabels = rawBaseLabels.map((lbl, idx) => validateLabel(lbl, `labels.base[${idx}]`));
+  const occupiedLabels = new Set(baseLabels);
+  if (occupiedLabels.size !== expectedBaseLen) {
+    throw createValidationError('labels.base contains duplicate vertex labels');
+  }
+  if (occupiedLabels.has(apexLabel)) {
+    throw createValidationError(`labels.apex (${apexLabel}) cannot collide with a base vertex label`);
+  }
+  occupiedLabels.add(apexLabel);
+
+  const pts = {};
   let foot = null;
-  let explanationLines = [];
-  let basePolygonPoints = [];
-  let diagonals = [];
+  const explanationLines = [];
+  const basePolygonPoints = [...baseLabels];
+  const diagonals = [];
   let baseArea = 0;
 
   // ==========================================
   // 1. TÍNH TỌA ĐỘ ĐÁY
   // ==========================================
-  if (type === 'tam_giac' || base_shape.startsWith('tam_giac')) {
+  if (isTriShape) {
     const [lA, lB, lC] = baseLabels;
-    basePolygonPoints = [lA, lB, lC];
-
-    switch (base_shape) {
+    switch (baseShape) {
       case 'tam_giac_deu': {
-        // Tam giác đều cạnh a
-        // A=(0,0,0), B=(a,0,0), C=(a/2, a*sqrt(3)/2, 0)
         const hEq = (a * Math.sqrt(3)) / 2;
         pts[lA] = [0, 0, 0];
         pts[lB] = [a, 0, 0];
@@ -71,8 +230,9 @@ function buildPyramidCommands(options = {}) {
         break;
       }
       case 'tam_giac_vuong_B': {
-        // Vuông tại B: BA = a (Oy), BC = sideBC (Ox)
-        const sideBC = Number(dimensions.c) || Number(dimensions.b) || 4;
+        const sideBC = dimensions.c !== undefined
+          ? parsePositiveDim(dimensions.c, 4, 'c')
+          : (dimensions.b !== undefined ? b : 4);
         pts[lB] = [0, 0, 0];
         pts[lA] = [0, a, 0];
         pts[lC] = [sideBC, 0, 0];
@@ -81,7 +241,6 @@ function buildPyramidCommands(options = {}) {
         break;
       }
       case 'tam_giac_vuong_C': {
-        // Vuông tại C: CA = b (Ox), CB = a (Oy)
         pts[lC] = [0, 0, 0];
         pts[lA] = [b, 0, 0];
         pts[lB] = [0, a, 0];
@@ -90,7 +249,6 @@ function buildPyramidCommands(options = {}) {
         break;
       }
       case 'tam_giac_can': {
-        // Cân tại A: BC = a nằm trên Ox, A đối xứng trên Oy
         const halfA = a / 2;
         const sideB = Math.max(b, halfA + 0.5);
         const hCan = Math.sqrt(sideB * sideB - halfA * halfA);
@@ -102,20 +260,23 @@ function buildPyramidCommands(options = {}) {
         break;
       }
       case 'tam_giac_thuong': {
-        // Tam giác thường với cạnh đáy AB = sideC, cạnh AC = b
-        const sideC = Number(dimensions.c) || Math.sqrt(a * a + b * b - a * b);
-        const cosA = Math.max(-0.99, Math.min(0.99, (b * b + sideC * sideC - a * a) / (2 * b * sideC)));
-        const sinA = Math.sqrt(1 - cosA * cosA);
+        const sideC = dimensions.c !== undefined
+          ? parsePositiveDim(dimensions.c, 4, 'c')
+          : Math.sqrt(a * a + b * b - a * b);
+        if (a + b <= sideC || a + sideC <= b || b + sideC <= a) {
+          throw createValidationError(`Invalid triangle side lengths (a=${a}, b=${b}, c=${roundNum(sideC)}): violates triangle inequality`);
+        }
+        const cosA = (b * b + sideC * sideC - a * a) / (2 * b * sideC);
+        const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
         pts[lA] = [0, 0, 0];
         pts[lB] = [sideC, 0, 0];
-        pts[lC] = [roundNum(b * cosA), roundNum(b * sinA), 0];
+        pts[lC] = [b * cosA, b * sinA, 0];
         baseArea = 0.5 * sideC * b * sinA;
         explanationLines.push(`- Đáy ${lA}${lB}${lC} là tam giác thường (cạnh đáy ${lA}${lB} = ${roundNum(sideC)}, cạnh ${lA}${lC} = ${b})`);
         break;
       }
       case 'tam_giac_vuong_A':
       default: {
-        // Vuông tại A: AB = a (Ox), AC = b (Oy)
         pts[lA] = [0, 0, 0];
         pts[lB] = [a, 0, 0];
         pts[lC] = [0, b, 0];
@@ -125,11 +286,8 @@ function buildPyramidCommands(options = {}) {
       }
     }
   } else {
-    // TỨ GIÁC
     const [lA, lB, lC, lD] = baseLabels;
-    basePolygonPoints = [lA, lB, lC, lD];
-
-    switch (base_shape) {
+    switch (baseShape) {
       case 'hinh_vuong': {
         pts[lA] = [0, 0, 0];
         pts[lB] = [a, 0, 0];
@@ -149,7 +307,6 @@ function buildPyramidCommands(options = {}) {
         break;
       }
       case 'hinh_thoi': {
-        // Góc BAD = 60 độ
         const rad60 = Math.PI / 3;
         const dx = a * Math.cos(rad60);
         const dy = a * Math.sin(rad60);
@@ -174,22 +331,13 @@ function buildPyramidCommands(options = {}) {
         break;
       }
       case 'hinh_thang_vuong': {
-        // Hình thang vuông tại A và B: AB=a, BC=a (đáy bé), AD=2a (đáy lớn)
+        // Hình thang vuông tại A và B: AB = a, BC = b (đáy bé), AD = 2b (đáy lớn)
         pts[lA] = [0, 0, 0];
         pts[lB] = [a, 0, 0];
         pts[lC] = [a, b, 0];
         pts[lD] = [0, 2 * b, 0];
         baseArea = 0.5 * (b + 2 * b) * a;
         explanationLines.push(`- Đáy ${lA}${lB}${lC}${lD} là hình thang vuông tại ${lA} và ${lB} (đáy lớn ${lA}${lD} = ${2 * b}, đáy nhỏ ${lB}${lC} = ${b}, chiều cao ${lA}${lB} = ${a})`);
-        break;
-      }
-      default: {
-        pts[lA] = [0, 0, 0];
-        pts[lB] = [a, 0, 0];
-        pts[lC] = [a, a, 0];
-        pts[lD] = [0, a, 0];
-        baseArea = a * a;
-        explanationLines.push(`- Đáy ${lA}${lB}${lC}${lD} là hình vuông cạnh a = ${a}`);
         break;
       }
     }
@@ -204,61 +352,64 @@ function buildPyramidCommands(options = {}) {
   // 2. TÍNH VỊ TRÍ ĐƯỜNG CAO VÀ ĐỈNH S
   // ==========================================
   const [lA, lB, lC, lD] = baseLabels;
-  const isChopDeu = type === 'chop_deu' || height_type === 'chop_deu' || height_type === 'SO_chop_deu';
+  const isChopDeu = type === 'chop_deu' || heightType === 'chop_deu' || heightType === 'SO_chop_deu';
 
   if (isChopDeu) {
-    // Chóp đều: chân đường cao là tâm đáy O
+    const resolvedFoot = resolveFootLabel('O', labels.height_foot, occupiedLabels);
     if (basePolygonPoints.length === 3) {
-      // Trọng tâm tam giác đều
       const ox = (pts[lA][0] + pts[lB][0] + pts[lC][0]) / 3;
       const oy = (pts[lA][1] + pts[lB][1] + pts[lC][1]) / 3;
-      foot = { label: 'O', coords: [ox, oy, 0] };
+      foot = { label: resolvedFoot, coords: [ox, oy, 0] };
       pts[apexLabel] = [ox, oy, h];
-      explanationLines.push(`- Chóp tam giác đều: Tâm đáy O là trọng tâm $\\triangle ${lA}${lB}${lC}$, ${apexLabel}O $\\perp$ (${lA}${lB}${lC}), ${apexLabel}O = ${h}`);
+      const prefix = baseShape === 'tam_giac_deu' ? 'Chóp tam giác đều' : 'Chóp có chân đường cao tại trọng tâm đáy';
+      explanationLines.push(`- ${prefix}: Tâm đáy ${resolvedFoot} là trọng tâm $\\triangle ${lA}${lB}${lC}$, ${apexLabel}${resolvedFoot} $\\perp$ (${lA}${lB}${lC}), ${apexLabel}${resolvedFoot} = ${h}`);
     } else {
-      // Giao điểm 2 đường chéo hình vuông / chữ nhật / thoi
-      const ox = (pts[lA][0] + pts[lC][0]) / 2;
-      const oy = (pts[lA][1] + pts[lC][1]) / 2;
-      foot = { label: 'O', coords: [ox, oy, 0] };
+      const [ox, oy] = intersect2D(pts[lA], pts[lC], pts[lB], pts[lD]);
+      foot = { label: resolvedFoot, coords: [ox, oy, 0] };
       pts[apexLabel] = [ox, oy, h];
-      explanationLines.push(`- Chóp tứ giác đều: Tâm đáy O là giao điểm 2 đường chéo, ${apexLabel}O $\\perp$ (${lA}${lB}${lC}${lD}), ${apexLabel}O = ${h}`);
+      const prefix = baseShape === 'hinh_vuong' ? 'Chóp tứ giác đều' : 'Chóp có chân đường cao tại giao điểm 2 đường chéo';
+      explanationLines.push(`- ${prefix}: ${resolvedFoot} là giao điểm 2 đường chéo ${lA}${lC} và ${lB}${lD}, ${apexLabel}${resolvedFoot} $\\perp$ (${lA}${lB}${lC}${lD}), ${apexLabel}${resolvedFoot} = ${h}`);
     }
-  } else if (height_type === 'SA_vuong_goc_day' || height_type === 'edge_A') {
+  } else if (heightType === 'SA_vuong_goc_day' || heightType === 'edge_A') {
     foot = { label: lA, coords: [...pts[lA]] };
     pts[apexLabel] = [pts[lA][0], pts[lA][1], h];
     explanationLines.push(`- Cạnh bên ${apexLabel}${lA} $\\perp$ (đáy), chiều cao ${apexLabel}${lA} = ${h}`);
-  } else if (height_type === 'SB_vuong_goc_day' || height_type === 'edge_B') {
+  } else if (heightType === 'SB_vuong_goc_day' || heightType === 'edge_B') {
     foot = { label: lB, coords: [...pts[lB]] };
     pts[apexLabel] = [pts[lB][0], pts[lB][1], h];
     explanationLines.push(`- Cạnh bên ${apexLabel}${lB} $\\perp$ (đáy), chiều cao ${apexLabel}${lB} = ${h}`);
-  } else if (height_type === 'SC_vuong_goc_day' || height_type === 'edge_C') {
+  } else if (heightType === 'SC_vuong_goc_day' || heightType === 'edge_C') {
     foot = { label: lC, coords: [...pts[lC]] };
     pts[apexLabel] = [pts[lC][0], pts[lC][1], h];
     explanationLines.push(`- Cạnh bên ${apexLabel}${lC} $\\perp$ (đáy), chiều cao ${apexLabel}${lC} = ${h}`);
-  } else if (height_type === 'SH_trung_diem_AB') {
-    // Mặt bên (SAB) vuông góc đáy, tam giác SAB cân/đều => H là trung điểm AB
+  } else if (heightType === 'SH_trung_diem_AB') {
+    const resolvedFoot = resolveFootLabel('H', labels.height_foot, occupiedLabels);
     const hx = (pts[lA][0] + pts[lB][0]) / 2;
     const hy = (pts[lA][1] + pts[lB][1]) / 2;
-    foot = { label: footLabel || 'H', coords: [hx, hy, 0] };
+    foot = { label: resolvedFoot, coords: [hx, hy, 0] };
     pts[apexLabel] = [hx, hy, h];
     explanationLines.push(`- Mặt bên (${apexLabel}${lA}${lB}) $\\perp$ (đáy), ${foot.label} là trung điểm ${lA}${lB}, ${apexLabel}${foot.label} $\\perp$ (đáy), ${apexLabel}${foot.label} = ${h}`);
-  } else if (height_type === 'SH_trung_diem_AD' && pts[lD]) {
+  } else if (heightType === 'SH_trung_diem_AD') {
+    const resolvedFoot = resolveFootLabel('H', labels.height_foot, occupiedLabels);
     const hx = (pts[lA][0] + pts[lD][0]) / 2;
     const hy = (pts[lA][1] + pts[lD][1]) / 2;
-    foot = { label: footLabel || 'H', coords: [hx, hy, 0] };
+    foot = { label: resolvedFoot, coords: [hx, hy, 0] };
     pts[apexLabel] = [hx, hy, h];
-    explanationLines.push(`- ${foot.label} là trung điểm ${lA}${lD}, ${apexLabel}${foot.label} $\\perp$ (đáy), ${apexLabel}${foot.label} = ${h}`);
-  } else if (height_type === 'SH_trong_tam' && pts[lC]) {
-    const hx = (pts[lA][0] + pts[lB][0] + pts[lC][0]) / 3;
-    const hy = (pts[lA][1] + pts[lB][1] + pts[lC][1]) / 3;
-    foot = { label: footLabel || 'G', coords: [hx, hy, 0] };
+    explanationLines.push(`- Mặt bên (${apexLabel}${lA}${lD}) $\\perp$ (đáy), ${foot.label} là trung điểm ${lA}${lD}, ${apexLabel}${foot.label} $\\perp$ (đáy), ${apexLabel}${foot.label} = ${h}`);
+  } else if (heightType === 'SH_trong_tam') {
+    const resolvedFoot = resolveFootLabel('G', labels.height_foot, occupiedLabels);
+    const n = basePolygonPoints.length;
+    let sumX = 0;
+    let sumY = 0;
+    for (const v of basePolygonPoints) {
+      sumX += pts[v][0];
+      sumY += pts[v][1];
+    }
+    const hx = sumX / n;
+    const hy = sumY / n;
+    foot = { label: resolvedFoot, coords: [hx, hy, 0] };
     pts[apexLabel] = [hx, hy, h];
     explanationLines.push(`- ${foot.label} là trọng tâm đáy, ${apexLabel}${foot.label} $\\perp$ (đáy), chiều cao = ${h}`);
-  } else {
-    // Mặc định SA vuông góc đáy
-    foot = { label: lA, coords: [...pts[lA]] };
-    pts[apexLabel] = [pts[lA][0], pts[lA][1], h];
-    explanationLines.push(`- Cạnh bên ${apexLabel}${lA} $\\perp$ (đáy), chiều cao = ${h}`);
   }
 
   // ==========================================
@@ -266,14 +417,9 @@ function buildPyramidCommands(options = {}) {
   // ==========================================
   const commands = [];
 
-  // Perspective 3D
-  commands.push('SetPerspective("T")');
+  commands.push(`ShowAxes(${Boolean(show_axes)})`);
+  commands.push(`ShowGrid(${Boolean(show_grid)})`);
 
-  // Trục và lưới
-  commands.push(`ShowAxes(${show_axes})`);
-  commands.push(`ShowGrid(${show_grid})`);
-
-  // Tạo các điểm đỉnh đáy
   for (const label of basePolygonPoints) {
     const [x, y, z] = pts[label];
     commands.push(`${label} = ${ptStr(x, y, z)}`);
@@ -281,100 +427,118 @@ function buildPyramidCommands(options = {}) {
     commands.push(`ShowLabel(${label}, true)`);
   }
 
-  // Tạo điểm đỉnh S
   const [sx, sy, sz] = pts[apexLabel];
   commands.push(`${apexLabel} = ${ptStr(sx, sy, sz)}`);
   commands.push(`SetPointSize(${apexLabel}, 5)`);
-  commands.push(`SetColor(${apexLabel}, "${height_color}")`);
+  commands.push(`SetColor(${apexLabel}, "${heightColor}")`);
   commands.push(`ShowLabel(${apexLabel}, true)`);
 
-  // Tạo đa giác đáy
   const basePolyName = 'day';
   commands.push(`${basePolyName} = Polygon(${basePolygonPoints.join(', ')})`);
   commands.push(`SetColor(${basePolyName}, "${color}")`);
   commands.push(`SetFilling(${basePolyName}, 0.15)`);
 
-  // Tạo khối chóp
   const pyramidName = 'chop';
   commands.push(`${pyramidName} = Pyramid(${basePolyName}, ${apexLabel})`);
   commands.push(`SetColor(${pyramidName}, "${color}")`);
   commands.push(`SetFilling(${pyramidName}, ${opacity})`);
 
-  // Chân đường cao H (nếu không trùng với điểm đỉnh đáy đã có)
   const isFootExistingVertex = basePolygonPoints.includes(foot.label);
   if (!isFootExistingVertex && foot) {
     commands.push(`${foot.label} = ${ptStr(foot.coords[0], foot.coords[1], foot.coords[2])}`);
     commands.push(`SetPointSize(${foot.label}, 4)`);
-    commands.push(`SetColor(${foot.label}, "${height_color}")`);
+    commands.push(`SetColor(${foot.label}, "${heightColor}")`);
     commands.push(`ShowLabel(${foot.label}, true)`);
   }
 
-  // Vẽ đường cao nối S và chân đường cao
   if (draw_height && foot) {
-    const heightSegName = `duong_cao_${apexLabel}${foot.label}`;
+    const heightSegName = `duong_cao_${safeGgbIdPart(apexLabel)}${safeGgbIdPart(foot.label)}`;
     commands.push(`${heightSegName} = Segment(${apexLabel}, ${foot.label})`);
-    commands.push(`SetColor(${heightSegName}, "${height_color}")`);
+    commands.push(`SetColor(${heightSegName}, "${heightColor}")`);
     commands.push(`SetLineThickness(${heightSegName}, 3)`);
-    // Nếu chân đường cao nằm trong khối chóp hoặc là tâm O, vẽ nét đứt
     if (!isFootExistingVertex) {
-      commands.push(`SetLineStyle(${heightSegName}, 1)`); // 1 = dashed
+      commands.push(`SetLineStyle(${heightSegName}, 1)`);
     }
   }
 
-  // Vẽ đường chéo đáy (nếu là tứ giác) nét đứt
   for (let i = 0; i < diagonals.length; i++) {
     const [p1, p2] = diagonals[i];
-    const diagName = `cheo_${p1}${p2}`;
+    const diagName = `cheo_${safeGgbIdPart(p1)}${safeGgbIdPart(p2)}`;
     commands.push(`${diagName} = Segment(${p1}, ${p2})`);
-    commands.push(`SetLineStyle(${diagName}, 1)`); // dashed
+    commands.push(`SetLineStyle(${diagName}, 1)`);
     commands.push(`SetColor(${diagName}, "#64748b")`);
     commands.push(`SetLineThickness(${diagName}, 2)`);
   }
 
-  // Các điểm phụ thêm (extra points: trung điểm, tỉ lệ...)
   if (Array.isArray(extra_points)) {
-    for (const ep of extra_points) {
-      if (ep.name && ep.midpoint_of && ep.midpoint_of.length === 2) {
-        const [p1, p2] = ep.midpoint_of;
-        commands.push(`${ep.name} = Midpoint(${p1}, ${p2})`);
-        commands.push(`SetPointSize(${ep.name}, 4)`);
-        commands.push(`SetColor(${ep.name}, "${ep.color || '#10b981'}")`);
-        commands.push(`ShowLabel(${ep.name}, true)`);
-        explanationLines.push(`- Điểm phụ: ${ep.name} là trung điểm của ${p1}${p2}`);
-      } else if (ep.name && ep.coords) {
-        commands.push(`${ep.name} = ${ptStr(ep.coords[0], ep.coords[1], ep.coords[2])}`);
-        commands.push(`SetPointSize(${ep.name}, 4)`);
-        commands.push(`SetColor(${ep.name}, "${ep.color || '#10b981'}")`);
-        commands.push(`ShowLabel(${ep.name}, true)`);
+    for (let i = 0; i < extra_points.length; i++) {
+      const ep = extra_points[i];
+      if (!ep || typeof ep !== 'object') {
+        throw createValidationError(`extra_points[${i}] must be an object`);
+      }
+      const epName = validateLabel(ep.name, `extra_points[${i}].name`);
+      const epColor = validateColor(ep.color !== undefined ? ep.color : '#10b981', `extra_points[${i}].color`);
+
+      if (ep.midpoint_of !== undefined) {
+        if (!Array.isArray(ep.midpoint_of) || ep.midpoint_of.length !== 2) {
+          throw createValidationError(`extra_points[${i}].midpoint_of must have 2 point labels`);
+        }
+        const p1 = validateLabel(ep.midpoint_of[0], `extra_points[${i}].midpoint_of[0]`);
+        const p2 = validateLabel(ep.midpoint_of[1], `extra_points[${i}].midpoint_of[1]`);
+        commands.push(`${epName} = Midpoint(${p1}, ${p2})`);
+        commands.push(`SetPointSize(${epName}, 4)`);
+        commands.push(`SetColor(${epName}, "${epColor}")`);
+        commands.push(`ShowLabel(${epName}, true)`);
+        explanationLines.push(`- Điểm phụ: ${epName} là trung điểm của ${p1}${p2}`);
+      } else if (ep.coords !== undefined) {
+        if (!Array.isArray(ep.coords) || ep.coords.length !== 3 || !ep.coords.every(Number.isFinite)) {
+          throw createValidationError(`extra_points[${i}].coords must be [x, y, z] finite numbers`);
+        }
+        commands.push(`${epName} = ${ptStr(ep.coords[0], ep.coords[1], ep.coords[2])}`);
+        commands.push(`SetPointSize(${epName}, 4)`);
+        commands.push(`SetColor(${epName}, "${epColor}")`);
+        commands.push(`ShowLabel(${epName}, true)`);
+      } else {
+        throw createValidationError(`extra_points[${i}] must specify midpoint_of or coords`);
       }
     }
   }
 
-  // Các mặt phẳng hoặc thiết diện bổ sung
   if (Array.isArray(planes)) {
     for (let i = 0; i < planes.length; i++) {
       const pl = planes[i];
-      if (pl.points && pl.points.length >= 3) {
-        const plName = `mat_phang_${i + 1}`;
-        commands.push(`${plName} = Polygon(${pl.points.join(', ')})`);
-        commands.push(`SetColor(${plName}, "${pl.color || '#f59e0b'}")`);
-        commands.push(`SetFilling(${plName}, ${pl.opacity || 0.35})`);
-        explanationLines.push(`- Mặt phẳng/Thiết diện qua: (${pl.points.join(', ')})`);
+      if (!pl || typeof pl !== 'object' || !Array.isArray(pl.points) || pl.points.length < 3) {
+        throw createValidationError(`planes[${i}].points must contain at least 3 valid point labels`);
       }
+      const plPoints = pl.points.map((pt, j) => validateLabel(pt, `planes[${i}].points[${j}]`));
+      const plColor = validateColor(pl.color !== undefined ? pl.color : '#f59e0b', `planes[${i}].color`);
+      const plOpacity = validateOpacity(pl.opacity, 0.35, `planes[${i}].opacity`);
+      const plName = `mat_phang_${i + 1}`;
+      commands.push(`${plName} = Polygon(${plPoints.join(', ')})`);
+      commands.push(`SetColor(${plName}, "${plColor}")`);
+      commands.push(`SetFilling(${plName}, ${plOpacity})`);
+      explanationLines.push(`- Mặt phẳng/Thiết diện qua: (${plPoints.join(', ')})`);
     }
   }
 
-  // Thể tích
   const volume = (1 / 3) * baseArea * h;
   const volumeFormula = `V = (1/3) * S_đáy * h = (1/3) * ${roundNum(baseArea)} * ${h} ≈ ${roundNum(volume)}`;
   explanationLines.push(`- Diện tích đáy: $S_{đáy} \\approx ${roundNum(baseArea)}$`);
   explanationLines.push(`- Thể tích khối chóp: $${volumeFormula}$`);
 
+  const roundedPoints = {};
+  for (const [k, coords] of Object.entries(pts)) {
+    roundedPoints[k] = coords.map(roundNum);
+  }
+  const roundedFoot = foot
+    ? { label: foot.label, coords: foot.coords.map(roundNum) }
+    : null;
+
   return {
     commands,
     explanation: explanationLines.join('\n'),
-    points: pts,
-    foot,
+    points: roundedPoints,
+    foot: roundedFoot,
     baseArea: roundNum(baseArea),
     height: h,
     volume: roundNum(volume),
