@@ -25,6 +25,8 @@ $files = @(
     "preload.js",
     "styles.css",
     "src\quick-rename.js",
+    "src\bridge-auth.js",
+    "src\window-utils.js",
     "src\geogebra-bridge.js",
     "src\pyramid-builder.js",
     "mcp-server.js",
@@ -49,7 +51,7 @@ Get-ChildItem "geogebra-offline\GeoGebra\HTML5\5.0" -Directory | ForEach-Object 
 }
 
 Write-Host "`n=== SYNTAX VALIDATION ==="
-foreach ($js in @("main.js", "preload.js", "src\quick-rename.js", "src\geogebra-bridge.js", "src\pyramid-builder.js", "mcp-server.js", "run-electron.js")) {
+foreach ($js in @("main.js", "preload.js", "src\quick-rename.js", "src\bridge-auth.js", "src\window-utils.js", "src\geogebra-bridge.js", "src\pyramid-builder.js", "mcp-server.js", "run-electron.js")) {
     $res = node --check $js 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Syntax check passed: $js"
@@ -144,12 +146,14 @@ function metricMap(perfResult) {
   return m;
 }
 
+const benchUserDataDir = path.join(os.tmpdir(), 'geogebra-quick-rename-bench-profile');
+
 async function runSingle(port, { cpuRate = 1, testBehavior = false } = {}) {
-  const env = { ...process.env };
+  const env = { ...process.env, GEOGEBRA_MCP_PORT: '43999' };
   delete env.ELECTRON_RUN_AS_NODE;
 
   const t0 = performance.now();
-  const child = spawn(electronExe, [repoDir, `--remote-debugging-port=${port}`], {
+  const child = spawn(electronExe, [repoDir, `--remote-debugging-port=${port}`, `--user-data-dir=${benchUserDataDir}`], {
     stdio: ['ignore', 'ignore', 'ignore'],
     env,
   });

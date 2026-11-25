@@ -3,21 +3,42 @@
  * Measures endpoint latency and fingerprints responses
  */
 const crypto = require('crypto');
+const { readBridgeToken } = require('./src/bridge-auth');
 
-const PORT = 3999;
+const PORT = parseInt(process.env.GEOGEBRA_MCP_PORT, 10) || 3999;
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 function sha256(str) {
   return crypto.createHash('sha256').update(str).digest('hex');
 }
 
+function getHeaders(extra = {}) {
+  const headers = { ...extra };
+  const token = readBridgeToken(PORT);
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+async function fetchJson(endpoint, options = {}) {
+  const res = await fetch(`${BASE_URL}${endpoint}`, {
+    ...options,
+    headers: getHeaders(options.headers || {})
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`HTTP ${res.status} on ${endpoint}: ${errText}`);
+  }
+  return await res.json();
+}
+
 async function run() {
-  console.log('=== GEO GEBRA BRIDGE BENCHMARK ===');
+  console.log('=== GEOGEBRA BRIDGE BENCHMARK ===');
 
   // Check if bridge is running
   try {
-    const statusRes = await fetch(`${BASE_URL}/status`);
-    const statusData = await statusRes.json();
+    const statusData = await fetchJson('/status');
     if (!statusData.running || !statusData.appletReady) {
       console.error('Bridge is running but GeoGebra applet is not ready.');
       process.exit(1);
@@ -31,8 +52,7 @@ async function run() {
   const statusTimes = [];
   for (let i = 0; i < 10; i++) {
     const t0 = performance.now();
-    const res = await fetch(`${BASE_URL}/status`);
-    await res.json();
+    await fetchJson('/status');
     statusTimes.push(performance.now() - t0);
   }
   statusTimes.sort((a, b) => a - b);
@@ -51,12 +71,11 @@ async function run() {
   let lastPyramidResult = null;
   for (let i = 0; i < 5; i++) {
     const t0 = performance.now();
-    const res = await fetch(`${BASE_URL}/pyramid`, {
+    lastPyramidResult = await fetchJson('/pyramid', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(pyramidPayload)
     });
-    lastPyramidResult = await res.json();
     pyramidTimes.push(performance.now() - t0);
   }
   pyramidTimes.sort((a, b) => a - b);
@@ -65,11 +84,9 @@ async function run() {
 
   // 3. Benchmark GET /screenshot (5 iterations)
   const screenshotTimes = [];
-  let lastScreenshot = null;
   for (let i = 0; i < 5; i++) {
     const t0 = performance.now();
-    const res = await fetch(`${BASE_URL}/screenshot`);
-    lastScreenshot = await res.json();
+    await fetchJson('/screenshot');
     screenshotTimes.push(performance.now() - t0);
   }
   screenshotTimes.sort((a, b) => a - b);
@@ -81,8 +98,7 @@ async function run() {
   let lastObjects = null;
   for (let i = 0; i < 5; i++) {
     const t0 = performance.now();
-    const res = await fetch(`${BASE_URL}/objects`);
-    lastObjects = await res.json();
+    lastObjects = await fetchJson('/objects');
     objectsTimes.push(performance.now() - t0);
   }
   objectsTimes.sort((a, b) => a - b);

@@ -52,10 +52,11 @@
   - `hinh_binh_hanh`: Hình bình hành $a \times b$.
   - `hinh_thang_vuong`: Hình thang vuông tại $A$ và $B$ (đáy lớn $2b$, đáy nhỏ $b$, chiều cao $a$).
 * **Vị trí đường cao (`height_type`)**:
-  - `SA_vuong_goc_day`, `SB_vuong_goc_day`: Cạnh bên vuông góc với mặt phẳng đáy.
+  - `SA_vuong_goc_day`, `SB_vuong_goc_day`, `SC_vuong_goc_day`: Cạnh bên vuông góc với mặt phẳng đáy.
   - `chop_deu` / `SO_chop_deu`: Đỉnh chóp chiếu xuống tâm đáy $O$ (chóp đều tam giác hoặc chóp đều tứ giác).
-  - `SH_trung_diem_AB`, `SH_trung_diem_AD`: Mặt bên $(SAB)$ vuông góc đáy, tam giác $SAB$ cân tại $S$.
-  - `SH_trong_tam`: Đường cao hạ từ đỉnh xuống trọng tâm tam giác đáy.
+  - `SH_trung_diem_AB`: Mặt bên $(SAB)$ vuông góc đáy, tam giác $SAB$ cân tại $S$.
+  - `SH_trung_diem_AD`: Mặt bên $(SAD)$ vuông góc đáy, tam giác $SAD$ cân tại $S$.
+  - `SH_trong_tam`: Đường cao hạ từ đỉnh xuống trọng tâm đáy.
 * **Điểm phụ & Mặt phẳng (`extra_points`, `planes`)**:
   - Tự động lấy trung điểm (ví dụ $M$ là trung điểm $SC$).
   - Dựng mặt phẳng thiết diện (ví dụ $(AMN)$).
@@ -72,7 +73,7 @@
     "geogebra": {
       "command": "node",
       "args": [
-        "C:\\Users\\Admin\\.gemini\\antigravity\\scratch\\geogebra-quick-rename\\mcp-server.js"
+        "<path-to-repo>\\mcp-server.js"
       ]
     }
   }
