@@ -2,7 +2,36 @@
  * Module xử lý tính năng Đổi tên nhanh (Quick Rename) cho GeoGebra
  * Tối ưu: Pooled DOM chips, event delegation, GPU translate3d, zero timer leak
  */
+const STANDARD_CHIPS = ['M', 'H', 'O', 'I', 'K', "A'", "B'", "C'"];
+const MAX_CHIPS = 6;
+const POINT_RECENCY_MS = 600;
+
+function computeSuggestionChips(currentName, existsFn, maxChips = MAX_CHIPS) {
+  const result = [];
+  const seen = new Set();
+  const addIfEligible = (name) => {
+    if (!name || name === currentName || seen.has(name)) return;
+    if (typeof existsFn === 'function' && existsFn(name)) return;
+    seen.add(name);
+    result.push(name);
+  };
+
+  if (currentName && !currentName.includes("'")) {
+    addIfEligible(`${currentName}'`);
+  }
+  for (const candidate of STANDARD_CHIPS) {
+    if (result.length >= maxChips) break;
+    addIfEligible(candidate);
+  }
+  return result.slice(0, maxChips);
+}
+
+let initialized = false;
+
 function initQuickRename(ggbApi) {
+  if (initialized || !ggbApi) return;
+  initialized = true;
+
   let activeTarget = null;
   let lastPointClickTime = 0;
   let deselectTimer = null;
@@ -25,6 +54,7 @@ function initQuickRename(ggbApi) {
     <div class="quick-rename-input-wrap">
       <input type="text" class="quick-rename-input" id="qr-input" maxlength="20" autocomplete="off" spellcheck="false" />
     </div>
+    <div class="quick-rename-error" id="qr-error" role="alert" hidden></div>
     <div class="quick-rename-chips" id="qr-chips"></div>
     <div class="quick-rename-footer">
       <span>↵ Enter để lưu</span>
@@ -34,12 +64,9 @@ function initQuickRename(ggbApi) {
   document.body.appendChild(popup);
 
   const input = popup.querySelector('#qr-input');
+  const errorEl = popup.querySelector('#qr-error');
   const currentNameEl = popup.querySelector('#qr-current-name');
   const chipsContainer = popup.querySelector('#qr-chips');
-
-  // Gợi ý các tên điểm hình học thông dụng
-  const STANDARD_CHIPS = ["M", "H", "O", "I", "K", "A'", "B'", "C'"];
-  const MAX_CHIPS = 6;
 
   // Pre-allocate 6 nút chip một lần duy nhất + event delegation
   const chipButtons = [];
@@ -58,17 +85,21 @@ function initQuickRename(ggbApi) {
     const btn = e.target.closest('.chip-btn');
     if (!btn || btn.hidden) return;
     e.stopPropagation();
-    applyRename(btn.dataset.name);
+    const chosen = btn.dataset.name;
+    input.value = chosen;
+    applyRename(chosen);
   });
 
   function updateChips(currentName) {
-    const prime = currentName && !currentName.includes("'") ? `${currentName}'` : null;
+    const chips = computeSuggestionChips(
+      currentName,
+      (name) => typeof ggbApi.exists === 'function' && ggbApi.exists(name),
+      MAX_CHIPS
+    );
     for (let i = 0; i < MAX_CHIPS; i++) {
-      const candidate = prime
-        ? (i === 0 ? prime : STANDARD_CHIPS[i - 1])
-        : STANDARD_CHIPS[i];
+      const candidate = chips[i];
       const btn = chipButtons[i];
-      if (candidate && candidate !== currentName) {
+      if (candidate) {
         if (btn.textContent !== candidate) {
           btn.textContent = candidate;
           btn.dataset.name = candidate;
@@ -80,11 +111,25 @@ function initQuickRename(ggbApi) {
     }
   }
 
+  function showError(message) {
+    hasError = true;
+    input.classList.add('is-error');
+    input.title = message;
+    if (errorEl) {
+      errorEl.textContent = message;
+      errorEl.hidden = false;
+    }
+  }
+
   function clearError() {
     if (!hasError) return;
     hasError = false;
     input.classList.remove('is-error');
     input.removeAttribute('title');
+    if (errorEl) {
+      errorEl.textContent = '';
+      errorEl.hidden = true;
+    }
   }
 
   function clearDeselectTimer() {
@@ -94,7 +139,6 @@ function initQuickRename(ggbApi) {
     }
   }
 
-  // Chỉ xóa trạng thái lỗi khi thực sự đang có lỗi
   input.addEventListener('input', clearError);
 
   // 2. Lắng nghe tương tác từ GeoGebra Client Listener
@@ -111,7 +155,6 @@ function initQuickRename(ggbApi) {
       }
     } else if (type === 'deselect') {
       clearDeselectTimer();
-      // Giữ lại activeTarget trong 400ms để chuột phải vẫn kịp nhận diện
       deselectTimer = setTimeout(() => {
         deselectTimer = null;
         if (Date.now() - lastPointClickTime > 400) {
@@ -161,7 +204,6 @@ function initQuickRename(ggbApi) {
 
     popup.style.transform = `translate3d(${Math.max(10, posX)}px, ${Math.max(10, posY)}px, 0)`;
 
-    // Focus & select text ở frame kế tiếp
     requestAnimationFrame(() => {
       if (isOpen) {
         input.focus();
@@ -171,47 +213,61 @@ function initQuickRename(ggbApi) {
   }
 
   function hidePopup() {
-    if (!isOpen) return;
+    if (!isOpen) return false;
     isOpen = false;
     popup.style.display = 'none';
     popup.classList.remove('is-open');
+    return true;
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dismissQuickRenamePopup = hidePopup;
   }
 
   // Áp dụng đổi tên
   function applyRename(newName) {
-    newName = (newName || input.value || '').trim();
-    if (newName && activeTarget && newName !== activeTarget) {
-      if (ggbApi.exists(newName)) {
-        hasError = true;
-        input.classList.add('is-error');
-        input.title = `Tên "${newName}" đã tồn tại!`;
+    newName = (newName !== undefined ? newName : input.value || '').trim();
+    if (!newName || !activeTarget || newName === activeTarget) {
+      hidePopup();
+      return;
+    }
+
+    if (ggbApi.exists(newName)) {
+      showError(`Tên "${newName}" đã tồn tại!`);
+      return;
+    }
+
+    try {
+      const ok = ggbApi.renameObject(activeTarget, newName);
+      if (ok === false) {
+        showError(`Tên "${newName}" không hợp lệ trong GeoGebra!`);
         return;
       }
-      try {
-        ggbApi.renameObject(activeTarget, newName);
-      } catch (err) {
-        console.error('Lỗi khi đổi tên:', err);
-      }
+    } catch (err) {
+      console.error('Lỗi khi đổi tên:', err);
+      showError(`Không thể đổi tên thành "${newName}"!`);
+      return;
     }
+
     hidePopup();
   }
 
-  // 5. Bắt sự kiện chuột phải (Context Menu) ở phase Capturing
+  // 5. Bắt sự kiện chuột phải (Context Menu) ở phase Capturing, chỉ trên canvas và đúng đối tượng điểm
   window.addEventListener('contextmenu', (e) => {
     if (isOpen && popup.contains(e.target)) return;
+    if (!e.target || typeof e.target.closest !== 'function' || !e.target.closest('#ggb-container canvas')) {
+      return;
+    }
 
-    const isPointRecently = (Date.now() - lastPointClickTime) < 500;
+    const isPointRecently = (Date.now() - lastPointClickTime) < POINT_RECENCY_MS;
     const targetObj = activeTarget;
 
     if (targetObj && ggbApi.exists(targetObj)) {
       const type = ggbApi.getObjectType(targetObj);
-      if (type === 'point' || isPointRecently) {
-        // CHẶN MENU CHUỘT PHẢI 3 CHẤM MẶC ĐỊNH CỦA GEOGEBRA
+      if (type === 'point' && isPointRecently) {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
-
-        // MỞ NGAY POPUP ĐỔI TÊN TỨC THÌ
         showPopup(e.clientX, e.clientY, targetObj);
         return false;
       }
@@ -227,7 +283,7 @@ function initQuickRename(ggbApi) {
     }
   });
 
-  // Ẩn khi click ra ngoài (không đọc DOM style khi popup đóng)
+  // Ẩn khi click ra ngoài
   window.addEventListener('mousedown', (e) => {
     if (isOpen && !popup.contains(e.target)) {
       hidePopup();
@@ -235,4 +291,10 @@ function initQuickRename(ggbApi) {
   });
 }
 
-window.initQuickRename = initQuickRename;
+if (typeof window !== 'undefined') {
+  window.initQuickRename = initQuickRename;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { initQuickRename, computeSuggestionChips };
+}
