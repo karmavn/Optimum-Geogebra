@@ -16,8 +16,16 @@ const child = spawn(electronPath, args, {
   windowsHide: false
 });
 
-child.on('close', (code) => {
-  process.exit(code || 0);
+child.on('error', (err) => {
+  console.error('[run-electron] Failed to spawn Electron:', err.message);
+  process.exit(1);
+});
+
+child.on('close', (code, signal) => {
+  if (signal) {
+    process.exit(1);
+  }
+  process.exit(code ?? 0);
 });
 
 process.on('SIGINT', () => child.kill('SIGINT'));
