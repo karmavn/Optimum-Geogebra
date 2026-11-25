@@ -30,6 +30,11 @@
       "**/*",
       "!geogebra-offline/GeoGebra/HTML5/5.0/web{,/**}",
       "!geogebra-offline/GeoGebra/HTML5/5.0/webSimple{,/**}",
+      "!test{,/**}",
+      "!benchmark-bridge.js",
+      "!*.log",
+      "!start-geogebra.bat",
+      "!README.md",
       "!measure.ps1",
       "!OPTIMIZE_REPORT.md"
     ],

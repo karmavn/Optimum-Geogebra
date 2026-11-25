@@ -1,13 +1,38 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu, protocol, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const GeoGebraBridge = require('./src/geogebra-bridge');
+const { bringWindowToFront } = require('./src/window-utils');
+
+const MAX_CRASH_LOG_BYTES = 1024 * 1024;
+const MAX_SAVE_BASE64_LEN = 20 * 1024 * 1024;
+
+function logFatalError(tag, err) {
+  const detail = (err && err.stack) || String(err);
+  console.error(`[${tag}]`, detail);
+  try {
+    const baseDir = app.isReady() ? app.getPath('userData') : os.tmpdir();
+    const logPath = path.join(baseDir, 'crash.log');
+    fs.promises.stat(logPath)
+      .then((stat) => (stat.size < MAX_CRASH_LOG_BYTES ? fs.promises.appendFile(logPath, `[${new Date().toISOString()}] [${tag}] ${detail}\n`) : null))
+      .catch((statErr) => {
+        if (statErr && statErr.code === 'ENOENT') {
+          return fs.promises.mkdir(baseDir, { recursive: true })
+            .then(() => fs.promises.appendFile(logPath, `[${new Date().toISOString()}] [${tag}] ${detail}\n`));
+        }
+        return null;
+      })
+      .catch(() => {});
+  } catch (_) {}
+}
 
 process.on('uncaughtException', (err) => {
-  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[uncaughtException] ${err.stack || err}\n`);
+  logFatalError('uncaughtException', err);
 });
+
 process.on('unhandledRejection', (reason) => {
-  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[unhandledRejection] ${reason && reason.stack || reason}\n`);
+  logFatalError('unhandledRejection', reason);
 });
 
 const APP_ROOT = path.resolve(__dirname);
@@ -45,6 +70,15 @@ protocol.registerSchemesAsPrivileged([
 
 let mainWindow = null;
 
+function isAllowedAppAsset(normalizedRel) {
+  return (
+    normalizedRel === 'index.html' ||
+    normalizedRel === 'styles.css' ||
+    normalizedRel === 'src/quick-rename.js' ||
+    normalizedRel.startsWith('geogebra-offline/')
+  );
+}
+
 function registerAppProtocol() {
   protocol.handle('app', async (request) => {
     try {
@@ -57,13 +91,18 @@ function registerAppProtocol() {
         return new Response('Forbidden', { status: 403 });
       }
 
+      const normalizedRel = path.relative(APP_ROOT, resolved).split(path.sep).join('/');
+      if (!isAllowedAppAsset(normalizedRel)) {
+        return new Response('Forbidden', { status: 403 });
+      }
+
       const [stat, data] = await Promise.all([
         fs.promises.stat(resolved),
         fs.promises.readFile(resolved)
       ]);
       const ext = path.extname(resolved).toLowerCase();
       const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-      const isHtml = ext === '.html';
+      const isImmutableVendor = normalizedRel.startsWith('geogebra-offline/');
 
       return new Response(data, {
         status: 200,
@@ -71,7 +110,7 @@ function registerAppProtocol() {
           'Content-Type': contentType,
           'Content-Length': String(data.byteLength),
           'Last-Modified': stat.mtime.toUTCString(),
-          'Cache-Control': isHtml ? 'no-cache' : 'public, max-age=31536000, immutable'
+          'Cache-Control': isImmutableVendor ? 'public, max-age=31536000, immutable' : 'no-cache'
         }
       });
     } catch (err) {
@@ -161,15 +200,6 @@ function buildAppMenu() {
   return Menu.buildFromTemplate(menuTemplate);
 }
 
-function bringWindowToFront(win) {
-  if (!win || win.isDestroyed()) return;
-  if (win.isMinimized()) win.restore();
-  win.show();
-  win.setAlwaysOnTop(true);
-  win.focus();
-  win.setAlwaysOnTop(false);
-}
-
 function createWindow() {
   const iconPath = path.join(APP_ROOT, 'icon.png');
   const windowOptions = {
@@ -177,16 +207,17 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    show: true, // Luôn hiển thị ngay để người dùng nhìn thấy cửa sổ GeoGebra trên màn hình
+    show: true,
     backgroundColor: '#f8fafc',
     title: 'GeoGebra Custom - Quick Rename (Offline Edition)',
     webPreferences: {
       preload: path.join(APP_ROOT, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      spellcheck: false, // Performance: Tắt kiểm tra chính tả ngầm để tiết kiệm RAM & CPU
-      backgroundThrottling: false, // Giữ hiệu năng mượt khi chuyển tab
-      v8CacheOptions: 'bypassHeatCheck' // Cache V8 bytecode ngay từ lần chạy đầu
+      sandbox: true,
+      spellcheck: false,
+      backgroundThrottling: false,
+      v8CacheOptions: 'bypassHeatCheck'
     }
   };
 
@@ -196,40 +227,40 @@ function createWindow() {
 
   mainWindow = new BrowserWindow(windowOptions);
 
-  mainWindow.webContents.on('did-fail-load', (e, errorCode, errorDescription, validatedURL) => {
-    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[webContents] did-fail-load: ${errorCode} ${errorDescription} on ${validatedURL}\n`);
-  });
-  mainWindow.webContents.on('console-message', (e, level, message, line, sourceId) => {
-    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[renderer-console] [lvl ${level}] ${message} (${sourceId}:${line})\n`);
-  });
-  mainWindow.on('close', (e) => {
-    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[window] close event\n`);
+  // Enforce strict offline & same-origin navigation boundaries
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, navUrl) => {
+    if (!navUrl.startsWith('app://local/')) {
+      event.preventDefault();
+    }
   });
 
-  // Đảm bảo đưa cửa sổ lên phía trước khi sẵn sàng
+  mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL) => {
+    logFatalError('webContents:did-fail-load', `${errorCode} ${errorDescription} on ${validatedURL}`);
+  });
+
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       bringWindowToFront(mainWindow);
     }
   });
 
-  // Dự phòng an toàn: Đảm bảo cửa sổ luôn được hiển thị và focus
-  setTimeout(() => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      bringWindowToFront(mainWindow);
-    }
-  }, 1000);
-
   mainWindow.loadURL('app://local/index.html');
 
   mainWindow.on('closed', () => {
-    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[event] mainWindow closed\n');
     mainWindow = null;
   });
 }
 
 // IPC: Lưu file GGB bất đồng bộ (Non-blocking I/O)
-ipcMain.handle('save-ggb-dialog', async (_event, base64Data) => {
+ipcMain.handle('save-ggb-dialog', async (event, base64Data) => {
+  const senderUrl = event && event.senderFrame && event.senderFrame.url;
+  if (!senderUrl || !senderUrl.startsWith('app://local/')) {
+    return { success: false, error: 'Unauthorized IPC sender' };
+  }
+  if (typeof base64Data !== 'string' || base64Data.length === 0 || base64Data.length > MAX_SAVE_BASE64_LEN) {
+    return { success: false, error: 'Invalid GGB data payload' };
+  }
   if (!mainWindow || mainWindow.isDestroyed()) {
     return { success: false };
   }
@@ -256,57 +287,46 @@ let bridge = null;
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
-  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[single-instance] lock failed, quitting\n');
   app.quit();
 } else {
-  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[single-instance] lock acquired\n');
   app.on('second-instance', () => {
-    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[single-instance] second-instance received\n');
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    bringWindowToFront(mainWindow);
   });
 
   app.whenReady().then(async () => {
-    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] started\n');
     session.defaultSession.setCodeCachePath(path.join(app.getPath('userData'), 'Code Cache'));
-    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] code cache set\n');
+
+    // Enforce 100% offline: block any outbound http/https/ws requests from renderer
+    session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
+      const allowed = /^(app|data|blob|devtools):/i.test(details.url);
+      callback({ cancel: !allowed });
+    });
+
     registerAppProtocol();
-    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] protocol registered\n');
     Menu.setApplicationMenu(buildAppMenu());
-    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] menu set\n');
     createWindow();
-    fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] window created\n');
 
     // Khởi động HTTP Bridge cho MCP Server / Agent
     bridge = new GeoGebraBridge(() => mainWindow);
     try {
       await bridge.start();
-      fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[whenReady] bridge started\n');
     } catch (err) {
-      fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), `[whenReady] bridge start error: ${err.message}\n`);
       console.warn('[GeoGebraBridge] Không thể khởi động bridge server:', err.message);
     }
   });
 }
 
 app.on('window-all-closed', () => {
-  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[app] window-all-closed\n');
-  if (bridge) bridge.stop();
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
-app.on('before-quit', () => {
-  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[app] before-quit\n');
-});
-
 app.on('will-quit', () => {
-  fs.appendFileSync(path.join(__dirname, 'electron-crash.log'), '[app] will-quit\n');
-  if (bridge) bridge.stop();
+  if (bridge) {
+    bridge.stop();
+    bridge = null;
+  }
 });
 
 app.on('activate', () => {
